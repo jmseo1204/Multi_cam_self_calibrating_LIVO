@@ -30,6 +30,7 @@ struct SubSparseMap {
   vector<float> propa_errors;
   vector<float> errors;
   vector<vector<float>> warp_patch;
+  vector<vector<float>> pixel_var; // 픽셀별 분산 벡터 추가
   vector<int> search_levels;
   vector<VisualPoint *> voxel_points;
   vector<double> inv_expo_list;
@@ -39,6 +40,7 @@ struct SubSparseMap {
     propa_errors.reserve(SIZE_LARGE);
     errors.reserve(SIZE_LARGE);
     warp_patch.reserve(SIZE_LARGE);
+    pixel_var.reserve(SIZE_LARGE);
     search_levels.reserve(SIZE_LARGE);
     voxel_points.reserve(SIZE_LARGE);
     inv_expo_list.reserve(SIZE_LARGE);
@@ -49,6 +51,7 @@ struct SubSparseMap {
     propa_errors.clear();
     errors.clear();
     warp_patch.clear();
+    pixel_var.clear();
     search_levels.clear();
     voxel_points.clear();
     inv_expo_list.clear();
@@ -102,6 +105,7 @@ public:
   // M3D original_Jdphi_dR, original_Jdp_dR;
 
   int min_visual_points = 20;
+  float voxel_size = 0.5;
 
   void processMultiCamVIO(
       const std::vector<cv::Mat> &imgs, const std::vector<int> &cam_indices,
@@ -118,7 +122,8 @@ public:
 
   void buildJacobianAndResiduals(const cv::Mat &img,
                                  SubSparseMap *current_cam_submap, int level,
-                                 VectorXd &z_cam, MatrixXd &H_sub_cam);
+                                 VectorXd &z_cam, MatrixXd &H_sub_cam,
+                                 VectorXd &R_cam);
 
   void setCameraTimeOffsets(const std::map<int, double> &time_offsets);
   void compensateExtrinsicsByTimeOffset(const std::vector<Pose6D> &imu_poses,
@@ -148,7 +153,8 @@ public:
       has_ref_patch_cache;
   bool ncc_en = false, colmap_output_en = false;
   bool dismiss_non_outofbound_pixels_from_ref_patch = false;
-  bool en_error_LERP_backprop = false;
+  bool en_error_se3_backprop = false;
+  bool en_pose_linear_interpolate_backprop = false;
 
   int width, height, grid_n_width, grid_n_height, length;
   double image_resize_factor;
@@ -158,6 +164,7 @@ public:
   int max_iterations, total_points;
 
   double img_point_cov, outlier_threshold, ncc_thre;
+  double min_cov_pixel;
 
   // VIO 파라미터들
   float shiTomasiScore_threshold;

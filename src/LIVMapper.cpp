@@ -12,6 +12,7 @@ which is included as part of this source code package.
 
 #include "LIVMapper.h"
 #include <Eigen/Eigenvalues>
+#include <iterator>
 
 LIVMapper::LIVMapper(ros::NodeHandle &nh)
     : extT(0, 0, 0), extR(M3D::Identity()) {
@@ -96,7 +97,7 @@ void LIVMapper::readParameters(ros::NodeHandle &nh) {
   nh.param<int>("common/img_en", img_en, 1);
   nh.param<int>("common/lidar_en", lidar_en, 1);
   nh.param<string>("common/img_topic", img_topic, "/left_camera/image");
-  nh.param<double>("common/sync_time_window", time_window_, 0.075);
+  nh.param<double>("common/sync_time_window", sync_time_window, 0.075);
 
   nh.param<bool>("vio/normal_en", normal_en, true);
   nh.param<bool>("vio/inverse_composition_en", inverse_composition_en, false);
@@ -644,6 +645,8 @@ void LIVMapper::handleLIO() {
       point.x = pv.point_w(0);
       point.y = pv.point_w(1);
       point.z = pv.point_w(2);
+      point.curvature = (pair.first - LidarMeasures.last_lio_update_time) *
+                        1000.0; // it can be negative
       // point.intensity = 0.0;
       feats_down_world_prev->points.push_back(point);
     }
@@ -745,11 +748,14 @@ void LIVMapper::handleLIO() {
 
   _pv_list = voxelmap_manager->pv_list_;
 
+  if (en_sliding_window_ICP)
+    _pv_prev.clear();
+
   for (const auto &point : _pv_list) {
     _pv_prev.insert({point.timestamp, point});
   }
 
-  assert(_pv_prev.begin()->first <= _pv_prev.rbegin()->first);
+  assert(_pv_prev.begin()->first <= (_pv_prev.begin() + 1)->first);
 
   while (!(_pv_prev.empty() || _pv_prev.rbegin()->first < 3000000000.0)) {
     auto it = _pv_prev.end();
@@ -1359,6 +1365,7 @@ bool LIVMapper::sync_packages(LidarMeasureGroup &meas) {
   }
 
   case LIVO: {
+    double max_time_start = std::numeric_limits<double>::min();
     double min_time_start = std::numeric_limits<double>::max();
     for (int i = 0; i < m_img_buffers.size(); i++) {
       // DEBUG
@@ -1373,27 +1380,32 @@ bool LIVMapper::sync_packages(LidarMeasureGroup &meas) {
         m_img_buffers[i].pop_front();
       }
 
-      if (!m_img_time_buffers[i].empty()) {
+      if (m_img_time_buffers[i].empty()) {
+        // continue;
+        return false;
+      } else {
+
+        max_time_start = max_time_start < m_img_time_buffers[i].back()
+                             ? m_img_time_buffers[i].back()
+                             : max_time_start;
         min_time_start = min_time_start > m_img_time_buffers[i].front()
                              ? m_img_time_buffers[i].front()
                              : min_time_start;
         // min_time_start = m_img_time_buffers[0].front();
-      } else {
-        return false;
       }
     }
+    if (max_time_start - min_time_start < sync_time_window)
+      return false;
 
     EKF_STATE last_lio_vio_flg = meas.lio_vio_flg;
     switch (last_lio_vio_flg) {
     case WAIT:
     case VIO: {
 
-      double time_window = time_window_;
-
       if (meas.last_lio_update_time <= 0.0)
         meas.last_lio_update_time = lid_header_time_buffer.front() - 0.00001;
 
-      double end_time = min_time_start + time_window;
+      // double end_time = min_time_start + sync_time_window;
 
       std::map<int, std::pair<double, cv::Mat>> candidates;
 
@@ -1431,6 +1443,8 @@ bool LIVMapper::sync_packages(LidarMeasureGroup &meas) {
       //        << offset << "s)" << endl;
       // }
 
+      double end_time = min_time_start + sync_time_window;
+
       int min_idx = -1;
       for (int i = 0; i < num_of_cam; i++) {
 
@@ -1441,6 +1455,7 @@ bool LIVMapper::sync_packages(LidarMeasureGroup &meas) {
 
         if (m_img_time_buffers[i].empty()) {
           std::cout << "channel pass(empty): " << i << std::endl;
+          continue;
         }
 
         double current_img_time = m_img_time_buffers[i].front();
@@ -1484,8 +1499,6 @@ bool LIVMapper::sync_packages(LidarMeasureGroup &meas) {
       for (const auto &cand : m_candidates) {
         int cam_idx = cand.first;
         double capture_time = cand.second.first;
-        // last_lio_update_time으로부터 각 이미지 캡처 시간까지의 시간 간격을
-        // 저장
         time_offsets_from_last_update[cam_idx] =
             capture_time - meas.last_lio_update_time;
       }

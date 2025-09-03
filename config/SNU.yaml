@@ -62,7 +62,7 @@ vio: #일단 대충
   patch_size: 20
   max_iterations: 5
   outlier_threshold: 1000 # 78 100 156 #100 200 500 700 infinite
-  img_point_cov: 100 # 100 1000 
+  img_point_cov: 100000000 # 100 1000 
   patch_pyrimid_level: 3
   normal_en: true
   raycast_en: true
@@ -70,12 +70,15 @@ vio: #일단 대충
   exposure_estimate_en: true
   inv_expo_cov: 0.1
   
+  
+  min_cov_pixel: 100
   shiTomasiScore_threshold: 20.0
   min_depth_threshold: 0.1
   max_depth_threshold: 100.0
   min_visual_points: 0
   dismiss_non_outofbound_pixels_from_ref_patch: true
-  en_error_LERP_backprop: true
+  en_error_se3_backprop: true
+  en_pose_linear_interpolate_backprop: false
 
 imu: #일단 ig_lio/config/ncd.yaml 에서 가져옴
 

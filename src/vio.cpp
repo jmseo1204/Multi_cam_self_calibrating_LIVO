@@ -17,7 +17,8 @@ VIOManager::VIOManager() {
 }
 
 void VIOManager::readParameters(ros::NodeHandle &nh) {
-  // VIO 관련 파라미터들
+  nh.param<double>("vio/min_cov_pixel", min_cov_pixel, 100.0);
+  nh.param<float>("vio/voxel_size", voxel_size, 0.5);
   nh.param<float>("vio/shiTomasiScore_threshold", shiTomasiScore_threshold,
                   150.0);
   nh.param<float>("vio/min_depth_threshold", min_depth_threshold, 1.5);
@@ -25,7 +26,9 @@ void VIOManager::readParameters(ros::NodeHandle &nh) {
   nh.param<int>("vio/min_visual_points", min_visual_points, 20);
   nh.param<bool>("vio/dismiss_non_outofbound_pixels_from_ref_patch",
                  dismiss_non_outofbound_pixels_from_ref_patch, false);
-  nh.param<bool>("vio/en_error_LERP_backprop", en_error_LERP_backprop, false);
+  nh.param<bool>("vio/en_error_se3_backprop", en_error_se3_backprop, false);
+  nh.param<bool>("vio/en_pose_linear_interpolate_backprop",
+                 en_pose_linear_interpolate_backprop, false);
 
   ROS_INFO("VIO Parameters loaded - shiTomasiScore_threshold: %.1f, "
            "min_depth_threshold: %.1f, max_depth_threshold: %.1f",
@@ -328,7 +331,7 @@ void VIOManager::getImagePatch(cv::Mat img, V2D pc, float *patch_tmp,
 
 void VIOManager::insertPointIntoVoxelMap(VisualPoint *pt_new) {
   V3D pt_w(pt_new->pos_[0], pt_new->pos_[1], pt_new->pos_[2]);
-  double voxel_size = 0.5;
+  // double voxel_size = 0.5;
   float loc_xyz[3];
   for (int j = 0; j < 3; j++) {
     loc_xyz[j] = pt_w[j] / voxel_size;
@@ -421,7 +424,7 @@ void VIOManager::warpAffine(const Matrix2d &A_cur_ref, const cv::Mat &img_ref,
       const Vector2f px(A_ref_cur * px_patch + px_ref.cast<float>());
       if (px[0] < 0 || px[1] < 0 || px[0] >= img_ref.cols - 1 ||
           px[1] >= img_ref.rows - 1)
-        patch_ptr[patch_size_total * pyramid_level + y * patch_size + x] = 0;
+        patch_ptr[patch_size_total * pyramid_level + y * patch_size + x] = -1;
       else
         patch_ptr[patch_size_total * pyramid_level + y * patch_size + x] =
             (float)vk::interpolateMat_8u(img_ref, px[0], px[1]);
@@ -462,7 +465,8 @@ double VIOManager::calculateNCC(float *ref_patch, float *cur_patch,
 void VIOManager::buildJacobianAndResiduals(const cv::Mat &img,
                                            SubSparseMap *current_cam_submap,
                                            int level, VectorXd &z_cam,
-                                           MatrixXd &H_sub_cam) {
+                                           MatrixXd &H_sub_cam,
+                                           VectorXd &R_cam) {
 
   // std::cout << "buildJacobianAndResiduals" << std::endl;
 
@@ -470,12 +474,14 @@ void VIOManager::buildJacobianAndResiduals(const cv::Mat &img,
   if (num_points == 0) {
     z_cam.resize(0);
     H_sub_cam.resize(0, 7);
+    R_cam.resize(0);
     return;
   }
 
   const int H_DIM = num_points * patch_size_total;
   z_cam.resize(H_DIM);
   H_sub_cam.resize(H_DIM, 7);
+  R_cam.resize(H_DIM);
 
   // 현재 카메라 파라미터(Rci, Pci, Jdphi_dR 등)는 이 함수가 호출되기 전에
   // 외부에서 이미 설정되었다고 가정합니다.
@@ -518,6 +524,7 @@ void VIOManager::buildJacobianAndResiduals(const cv::Mat &img,
     float w_ref_br = subpix_u_ref * subpix_v_ref;
 
     const std::vector<float> &P = current_cam_submap->warp_patch[i];
+    const std::vector<float> &pixel_variance = current_cam_submap->pixel_var[i];
     double inv_ref_expo = current_cam_submap->inv_expo_list[i];
 
     for (int x = 0; x < patch_size; x++) {
@@ -529,13 +536,14 @@ void VIOManager::buildJacobianAndResiduals(const cv::Mat &img,
 
         int row_idx = i * patch_size_total + x * patch_size + y;
 
-        if (dismiss_non_outofbound_pixels_from_ref_patch) {
-          if (P[patch_size_total * level + x * patch_size + y] == 0.0) {
-            z_cam(row_idx) = 0.0;
-            H_sub_cam.row(row_idx).setZero();
-            continue;
-          }
-        }
+        // if (dismiss_non_outofbound_pixels_from_ref_patch) {
+        //   if (P[patch_size_total * level + x * patch_size + y] == 0.0) {
+        //     z_cam(row_idx) = 0.0;
+        //     H_sub_cam.row(row_idx).setZero();
+        //     R_cam(row_idx) = 1; // 기본값 사용
+        //     continue;
+        //   }
+        // }
 
         float du =
             0.5f * ((w_ref_tl * img_ptr[scale] + w_ref_tr * img_ptr[scale * 2] +
@@ -576,6 +584,10 @@ void VIOManager::buildJacobianAndResiduals(const cv::Mat &img,
 
         z_cam(row_idx) = res;
 
+        // pixel_var을 사용하여 R_cam 설정
+        R_cam(row_idx) =
+            pixel_variance[patch_size_total * level + x * patch_size + y];
+
         if (exposure_estimate_en) {
           H_sub_cam.block<1, 7>(row_idx, 0) << JdR, Jdt, cur_value;
         } else {
@@ -612,6 +624,7 @@ void VIOManager::computeJacobianAndUpdateEKF(
 
       std::vector<MatrixXd> H_list;
       std::vector<VectorXd> z_list;
+      std::vector<VectorXd> R_list;
       int total_rows = 0;
 
       // 1. 각 카메라에 대해 H와 z를 현재 state 기준으로 계산하고 수집
@@ -621,16 +634,18 @@ void VIOManager::computeJacobianAndUpdateEKF(
 
         setCameraByIndex(cam_idx);
 
-        // b) H와 z 계산
+        // b) H, z, R 계산
         VectorXd z_cam;
         MatrixXd H_sub_cam;
+        VectorXd R_cam;
         // 해당 카메라의 특징점 리스트(visual_submaps[cam_idx])를 전달
         buildJacobianAndResiduals(img, visual_submaps[cam_idx], level, z_cam,
-                                  H_sub_cam);
+                                  H_sub_cam, R_cam);
 
         if (H_sub_cam.rows() > 0) {
           H_list.push_back(H_sub_cam);
           z_list.push_back(z_cam);
+          R_list.push_back(R_cam);
           total_rows += H_sub_cam.rows();
         }
       }
@@ -653,14 +668,16 @@ void VIOManager::computeJacobianAndUpdateEKF(
           static_cast<double>(total_rows);
       level_iteration_counts[static_cast<size_t>(level)] += 1;
 
-      // 2. 모든 H와 z를 하나의 큰 행렬/벡터로 결합 (Stacking)
+      // 2. 모든 H, z, R을 하나의 큰 행렬/벡터로 결합 (Stacking)
       MatrixXd H_all(total_rows, 7);
       VectorXd z_all(total_rows);
+      VectorXd R_all(total_rows);
       int current_row = 0;
       for (size_t i = 0; i < H_list.size(); ++i) {
         H_all.block(current_row, 0, H_list[i].rows(), H_list[i].cols()) =
             H_list[i];
         z_all.segment(current_row, z_list[i].rows()) = z_list[i];
+        R_all.segment(current_row, R_list[i].rows()) = R_list[i];
         current_row += H_list[i].rows();
       }
 
@@ -673,20 +690,77 @@ void VIOManager::computeJacobianAndUpdateEKF(
         old_state = (*state);
         last_error = error;
 
-        // 3. 결합된 H, z를 사용하여 단일 최적화 수행
+        // 3. 결합된 H, z, R을 사용하여 단일 최적화 수행
         auto &&H_sub_T = H_all.transpose();
         H_T_H.setZero();
         G.setZero();
-        H_T_H.block<7, 7>(0, 0) = H_sub_T * H_all;
+
+        // R_all을 사용하여 가중치가 적용된 H_T_H 계산
+        // H_T_H = H^T * R^(-1) * H (R은 대각행렬이므로 효율적으로 계산)
+        std::cout << "mean of R: " << R_all.sum() / R_all.size() << std::endl;
+
+        // R_all의 분위수 계산 및 출력
+        VectorXd R_sorted = R_all;
+        std::sort(R_sorted.data(), R_sorted.data() + R_sorted.size());
+        int n = R_sorted.size();
+
+        double Q0 = R_sorted(0);                   // 최솟값
+        double Q1 = R_sorted(int((n - 1) * 0.25)); // 25% 분위수
+        double Q2 = R_sorted(int((n - 1) * 0.5));  // 50% 분위수 (중앙값)
+        double Q3 = R_sorted(int((n - 1) * 0.75)); // 75% 분위수
+        double Q4 = R_sorted(n - 1);               // 최댓값
+
+        std::cout << "R_all quantiles - Q0: " << Q0 << ", Q1: " << Q1
+                  << ", Q2: " << Q2 << ", Q3: " << Q3 << ", Q4: " << Q4
+                  << std::endl;
+
+        // 현재 state의 rotation과 translation covariance 고유값 출력
+        Eigen::Matrix3d rot_cov = state->cov.block<3, 3>(0, 0);
+        Eigen::Matrix3d trans_cov = state->cov.block<3, 3>(3, 3);
+
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es_rot(rot_cov);
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es_trans(trans_cov);
+
+        Eigen::Vector3d rot_eigs = es_rot.eigenvalues();
+        Eigen::Vector3d trans_eigs = es_trans.eigenvalues();
+
+        // 내림차순으로 정렬
+        std::sort(rot_eigs.data(), rot_eigs.data() + 3, std::greater<double>());
+        std::sort(trans_eigs.data(), trans_eigs.data() + 3,
+                  std::greater<double>());
+
+        std::cout << "Rotation cov eigenvalues (desc): " << rot_eigs(0) << ", "
+                  << rot_eigs(1) << ", " << rot_eigs(2) << std::endl;
+        std::cout << "Translation cov eigenvalues (desc): " << trans_eigs(0)
+                  << ", " << trans_eigs(1) << ", " << trans_eigs(2)
+                  << std::endl;
+
+        for (int i = 0; i < total_rows; ++i) {
+          // double inv_R_i = 1.0 / std::max(min_cov_pixel, R_all(i));
+          double inv_R_i = 1.0 / R_all(i);
+          H_T_H.block<7, 7>(0, 0) +=
+              inv_R_i * H_all.row(i).transpose() * H_all.row(i);
+        }
+
         MD(DIM_STATE, DIM_STATE) &&K_1 =
-            (H_T_H + (state->cov / img_point_cov).inverse()).inverse();
-        auto &&HTz = H_sub_T * z_all;
+            (H_T_H + (state->cov).inverse()).inverse();
+
+        // R^(-1) * z 계산
+        VectorXd R_inv_z(total_rows);
+        for (int i = 0; i < total_rows; ++i) {
+          // double inv_R_i = 1.0 / std::max(1e-2, R_all(i));
+          double inv_R_i = 1.0 / R_all(i);
+          R_inv_z(i) = z_all(i) * inv_R_i;
+        }
+        auto &&HTz = H_sub_T * R_inv_z;
         auto vec = (*state_propagat) - (*state);
         G.block<DIM_STATE, 7>(0, 0) =
             K_1.block<DIM_STATE, 7>(0, 0) * H_T_H.block<7, 7>(0, 0);
         MD(DIM_STATE, 1)
         solution = -K_1.block<DIM_STATE, 7>(0, 0) * HTz + vec -
                    G.block<DIM_STATE, 7>(0, 0) * vec.block<7, 1>(0, 0);
+
+        std::cout << "state update" << std::endl;
 
         (*state) += solution;
 
@@ -708,6 +782,7 @@ void VIOManager::computeJacobianAndUpdateEKF(
     }
   }
 
+  std::cout << "level update" << std::endl;
   // 레벨별 평균을 멤버에 기록 (프레임 단위)
   level_avg_visual_points.clear();
   level_avg_visual_points.resize(static_cast<size_t>(patch_pyrimid_level), 0.0);
@@ -764,7 +839,7 @@ void VIOManager::retrieveFromVisualSparseMap(
   // Controls whether to include the visual submap from the previous frame.
   sub_feat_map->clear();
 
-  float voxel_size = 0.5;
+  // float voxel_size = 0.5;
 
   if (!normal_en)
     warp_map.clear();
@@ -1051,118 +1126,189 @@ void VIOManager::retrieveFromVisualSparseMap(
       // t_2 += omp_get_wtime() - t_1;
 
       // t_1 = omp_get_wtime();
-      Feature *ref_ftr;
-      std::vector<float> patch_wrap(warp_len);
-
-      int search_level;
-      Matrix2d A_cur_ref_zero;
-
       if (!pt->is_normal_initialized_)
         continue;
 
-      if (normal_en) {
+      // ================================================================== //
+      // ### 수정된 핵심 로직: 여러 패치의 평균 사용 ###
+      // ================================================================== //
 
-        // update ref patch among target(obs_) patches
-        float phtometric_errors_min = std::numeric_limits<float>::max();
+      // 1. 후보 패치 선정: 현재 프레임과 회전이 유사한 패치들을 최대 10개까지
+      // 선정
 
-        if (pt->obs_.size() == 1) {
-          ref_ftr = *pt->obs_.begin();
-          pt->ref_patch = ref_ftr;
-          pt->has_ref_patch_ = true;
-        } else if (!pt->has_ref_patch_) {
-          for (auto it = pt->obs_.begin(), ite = pt->obs_.end(); it != ite;
-               ++it) {
-            Feature *ref_patch_temp = *it;
-            float *patch_temp = ref_patch_temp->patch_;
-            float phtometric_errors = 0.0;
-            int count = 0;
-            for (auto itm = pt->obs_.begin(), itme = pt->obs_.end();
-                 itm != itme; ++itm) {
-              if ((*itm)->id_ == ref_patch_temp->id_)
-                continue;
-              float *patch_cache = (*itm)->patch_;
+      // 현재 프레임의 월드에 대한 회전 행렬
+      const M3D &current_R_w_c =
+          new_frame_->T_f_w_.rotation_matrix()
+              .transpose(); // T_f_w_는 T_c_w, 따라서 transpose해야 R_w_c
 
-              for (int ind = 0; ind < patch_size_total; ind++) {
-                phtometric_errors += (patch_temp[ind] - patch_cache[ind]) *
-                                     (patch_temp[ind] - patch_cache[ind]);
-              }
-              count++;
-            }
-            phtometric_errors = phtometric_errors / count;
-            if (phtometric_errors < phtometric_errors_min) {
-              phtometric_errors_min = phtometric_errors;
-              ref_ftr = ref_patch_temp;
+      // 각 패치와 현재 프레임 간의 회전 차이를 저장할 벡터
+      std::vector<std::pair<double, Feature *>> candidate_features;
+
+      for (auto it = pt->obs_.begin(); it != pt->obs_.end(); ++it) {
+        Feature *ftr = *it;
+        const M3D &past_R_w_c = ftr->T_f_w_.rotation_matrix().transpose();
+
+        // 두 회전 행렬 간의 각도 차이 계산 (Frobenius norm 이용 근사)
+        // acos((tr(R1^T * R2) - 1) / 2)가 더 정확하지만, norm이 더 빠름
+
+        double rotation_diff = std::acos(
+            0.5 * ((current_R_w_c.transpose() * past_R_w_c).trace() - 1));
+        candidate_features.push_back({rotation_diff, ftr});
+      }
+
+      // 회전 차이가 작은 순서대로 정렬
+      std::sort(candidate_features.begin(), candidate_features.end(),
+                [](const auto &a, const auto &b) { return a.first < b.first; });
+
+      // 최대 10개 또는 obs_ 사이즈 중 작은 값을 선택
+      int num_patches_to_use = std::min((int)candidate_features.size(), 10);
+      if (num_patches_to_use == 0) {
+        continue; // 사용할 패치가 없으면 이 포인트는 건너뜀
+      }
+
+      // 2. 선택된 여러 패치를 Warping하여 가중평균 및 분산 계산 (최적화된 단일
+      // 패스)
+
+      std::vector<float> avg_warped_patch(
+          patch_size_total * patch_pyrimid_level, 0.0f);
+      std::vector<float> pixel_var(
+          patch_size_total * patch_pyrimid_level,
+          1000.0 * min_cov_pixel); // 분산 벡터, 기본값 MAX var
+      std::vector<int> pixel_count(patch_size_total * patch_pyrimid_level,
+                                   0); // 픽셀별 count 벡터
+      std::vector<float> temp_warped_patch(warp_len);
+      double weighted_inv_expo = 0.0;
+      double total_weight = 0.0;
+
+      // 각 패치의 warping 결과를 저장할 벡터
+      std::vector<std::vector<float>> warped_patches;
+      std::vector<double> patch_weights;
+      std::vector<double> patch_inv_expos;
+
+      // 첫 번째 패스: 모든 패치를 warping하고 결과 저장
+      for (int p_idx = 0; p_idx < num_patches_to_use; ++p_idx) {
+        Feature *ref_ftr = candidate_features[p_idx].second;
+        double rotation_diff = candidate_features[p_idx].first;
+
+        // 가중치 계산: cos(rotation_diff) 사용
+        double weight = std::cos(rotation_diff);
+        if (weight < 0)
+          weight = 0; // 음수 가중치 방지
+
+        // 각 후보 패치에 대한 아핀 변환 행렬 계산 (기존 로직과 동일)
+        Matrix2d A_cur_ref_zero;
+        int search_level;
+
+        // normal_en 플래그에 따라 아핀 행렬 계산 (기존과 동일)
+        if (normal_en) {
+          V3D norm_vec =
+              (ref_ftr->T_f_w_.rotation_matrix() * pt->normal_).normalized();
+          V3D pf(ref_ftr->T_f_w_ * pt->pos_);
+          SE3 T_cur_ref = new_frame_->T_f_w_ * ref_ftr->T_f_w_.inverse();
+          getWarpMatrixAffineHomography(*cam, ref_ftr->px_, pf, norm_vec,
+                                        T_cur_ref, 0, A_cur_ref_zero);
+          search_level = getBestSearchLevel(A_cur_ref_zero, 2);
+        } else {
+          auto iter_warp = warp_map.find(ref_ftr->id_);
+          if (iter_warp != warp_map.end()) {
+            search_level = iter_warp->second->search_level;
+            A_cur_ref_zero = iter_warp->second->A_cur_ref;
+          } else {
+            getWarpMatrixAffine(*cam, ref_ftr->px_, ref_ftr->f_,
+                                (ref_ftr->pos() - pt->pos_).norm(),
+                                new_frame_->T_f_w_ * ref_ftr->T_f_w_.inverse(),
+                                ref_ftr->level_, 0, patch_size_half,
+                                A_cur_ref_zero);
+
+            search_level = getBestSearchLevel(A_cur_ref_zero, 2);
+
+            Warp *ot = new Warp(search_level, A_cur_ref_zero);
+            warp_map[ref_ftr->id_] = ot;
+          }
+        }
+
+        // 각 패치를 현재 프레임으로 warping
+        for (int pyramid_level = 0; pyramid_level <= patch_pyrimid_level - 1;
+             pyramid_level++) {
+          warpAffine(A_cur_ref_zero, ref_ftr->img_, ref_ftr->px_,
+                     ref_ftr->level_, search_level, pyramid_level,
+                     patch_size_half, temp_warped_patch.data());
+        }
+
+        // warping 결과 저장
+        warped_patches.push_back(std::vector<float>(temp_warped_patch.begin(),
+                                                    temp_warped_patch.end()));
+        patch_weights.push_back(weight);
+        patch_inv_expos.push_back(ref_ftr->inv_expo_time_);
+
+        total_weight += weight;
+        weighted_inv_expo += ref_ftr->inv_expo_time_ * weight;
+      }
+
+      if (total_weight == 0.0)
+        continue;
+
+      // 두 번째 패스: 가중평균과 가중분산을 동시에 계산
+      for (size_t k = 0; k < avg_warped_patch.size(); ++k) {
+        double weighted_sum = 0.0;
+        double weight_sum = 0.0;
+        int valid_count = 0;
+
+        // 가중평균 계산
+        for (int p_idx = 0; p_idx < num_patches_to_use; ++p_idx) {
+          if (warped_patches[p_idx][k] > 1e-6) {
+            float warped_value =
+                warped_patches[p_idx][k] * patch_inv_expos[p_idx];
+            weighted_sum += warped_value * patch_weights[p_idx];
+            weight_sum += patch_weights[p_idx];
+            valid_count++;
+          }
+        }
+
+        if (valid_count > 0) {
+          avg_warped_patch[k] = weighted_sum / weight_sum;
+          pixel_count[k] = valid_count;
+
+          // 가중분산 계산 (Welford's online algorithm 변형)
+          double weighted_variance = 0.0;
+          for (int p_idx = 0; p_idx < num_patches_to_use; ++p_idx) {
+            if (warped_patches[p_idx][k] > 1e-6) {
+              float warped_value =
+                  warped_patches[p_idx][k] * patch_inv_expos[p_idx];
+              double diff = warped_value - avg_warped_patch[k];
+              weighted_variance += patch_weights[p_idx] * diff * diff;
             }
           }
-          pt->ref_patch = ref_ftr;
-          pt->has_ref_patch_ = true;
-        } else {
-          ref_ftr = pt->ref_patch;
-        }
-      } else {
-        if (!pt->getCloseViewObs(new_frame_->pos(), ref_ftr, pc))
-          continue;
-      }
 
-      if (normal_en) {
-        V3D norm_vec =
-            (ref_ftr->T_f_w_.rotation_matrix() * pt->normal_).normalized();
-
-        V3D pf(ref_ftr->T_f_w_ * pt->pos_);
-        // V3D pf_norm = pf.normalized();
-
-        // double cos_theta = norm_vec.dot(pf_norm);
-        // if(cos_theta < 0) norm_vec = -norm_vec;
-        // if (abs(cos_theta) < 0.08) continue; // 0.5 60 degree 0.34 70 degree
-        // 0.17 80 degree 0.08 85 degree
-
-        SE3 T_cur_ref = new_frame_->T_f_w_ * ref_ftr->T_f_w_.inverse();
-
-        getWarpMatrixAffineHomography(*cam, ref_ftr->px_, pf, norm_vec,
-                                      T_cur_ref, 0, A_cur_ref_zero);
-
-        search_level = getBestSearchLevel(A_cur_ref_zero, 2);
-      } else {
-        auto iter_warp = warp_map.find(ref_ftr->id_);
-        if (iter_warp != warp_map.end()) {
-          search_level = iter_warp->second->search_level;
-          A_cur_ref_zero = iter_warp->second->A_cur_ref;
-        } else {
-          getWarpMatrixAffine(*cam, ref_ftr->px_, ref_ftr->f_,
-                              (ref_ftr->pos() - pt->pos_).norm(),
-                              new_frame_->T_f_w_ * ref_ftr->T_f_w_.inverse(),
-                              ref_ftr->level_, 0, patch_size_half,
-                              A_cur_ref_zero);
-
-          search_level = getBestSearchLevel(A_cur_ref_zero, 2);
-
-          Warp *ot = new Warp(search_level, A_cur_ref_zero);
-          warp_map[ref_ftr->id_] = ot;
+          if (valid_count == 0) {
+            pixel_var[k] =
+                1000.0 * min_cov_pixel; // var INF -> impact minimized
+          } else if (valid_count <= 3) {
+            pixel_var[k] = 3.0 * min_cov_pixel;
+          } else {
+            pixel_var[k] =
+                std::max(weighted_variance / weight_sum * img_point_cov,
+                         min_cov_pixel); // 가중분산 정규화
+          }
         }
       }
-      // t_4 += omp_get_wtime() - t_1;
 
-      // t_1 = omp_get_wtime();
+      double avg_inv_expo = weighted_inv_expo / total_weight;
 
-      for (int pyramid_level = 0; pyramid_level <= patch_pyrimid_level - 1;
-           pyramid_level++) {
-        warpAffine(A_cur_ref_zero, ref_ftr->img_, ref_ftr->px_, ref_ftr->level_,
-                   search_level, pyramid_level, patch_size_half,
-                   patch_wrap.data());
-      }
+      // 3. 현재 이미지 패치와 평균 reprojected patch 간의 에러 계산
 
       getImagePatch(img, pc, patch_buffer.data(), 0);
 
       float error = 0.0;
       for (int ind = 0; ind < patch_size_total; ind++) {
-        error += (ref_ftr->inv_expo_time_ * patch_wrap[ind] -
-                  state->inv_expo_time * patch_buffer[ind]) *
-                 (ref_ftr->inv_expo_time_ * patch_wrap[ind] -
-                  state->inv_expo_time * patch_buffer[ind]);
+        // 주의: avg_warped_patch는 이미 inv_expo_time이 곱해져 있음
+        float residual =
+            avg_warped_patch[ind] - state->inv_expo_time * patch_buffer[ind];
+        error += residual * residual;
       }
 
       if (ncc_en) {
-        double ncc = calculateNCC(patch_wrap.data(), patch_buffer.data(),
+        double ncc = calculateNCC(avg_warped_patch.data(), patch_buffer.data(),
                                   patch_size_total);
         if (ncc < ncc_thre) {
           // grid_num[i] = TYPE_UNKNOWN;
@@ -1173,12 +1319,22 @@ void VIOManager::retrieveFromVisualSparseMap(
       if (error > outlier_threshold * patch_size_total)
         continue;
 
+      // 4. 최종 결과 저장
       visual_submap->voxel_points.push_back(pt);
       visual_submap->propa_errors.push_back(error);
-      visual_submap->search_levels.push_back(search_level);
+      // search_level, warp_patch, inv_expo_list는 이제 평균 또는 대표값을
+      // 저장해야 함
+      visual_submap->search_levels.push_back(
+          candidate_features[0].second->level_); // 대표로 첫 번째 값 사용
       visual_submap->errors.push_back(error);
-      visual_submap->warp_patch.push_back(patch_wrap);
-      visual_submap->inv_expo_list.push_back(ref_ftr->inv_expo_time_);
+      visual_submap->warp_patch.push_back(avg_warped_patch); // 평균 패치 저장
+      visual_submap->pixel_var.push_back(pixel_var);         // 픽셀별 분산 저장
+      visual_submap->inv_expo_list.push_back(
+          avg_inv_expo); // 평균 노출 시간 저장
+
+      // ================================================================== //
+      // ### 수정 로직 끝 ###
+      // ================================================================== //
 
       // t_5 += omp_get_wtime() - t_1;
     }
@@ -1262,7 +1418,6 @@ void VIOManager::generateVisualMapPoints(cv::Mat img,
 
   // float weight_hue = 0.5;
 
-  // std::cout << "[ DEBUG ] generateVisualMapPoints 4" << std::endl;
   // double t0 = omp_get_wtime();
   for (const auto &pair : pg) {
     if (pair.second.normal == V3D(0, 0, 0))
@@ -1364,7 +1519,7 @@ void VIOManager::updateVisualMapPoints(cv::Mat img) {
         (delta_pose.rotation_matrix().trace() > 3.0 - 1e-6)
             ? 0.0
             : std::acos(0.5 * (delta_pose.rotation_matrix().trace() - 1));
-    if (delta_p > 0.5 || delta_theta > 0.3)
+    if (delta_p > 0.5 || delta_theta > 0.2)
       add_flag = true; // 0.5 || 0.3
 
     // Step 3: pixel distance
@@ -2672,7 +2827,7 @@ void VIOManager::compensateExtrinsicsByTimeOffset(
 
   Eigen::Matrix4d T_update_k;
 
-  if (en_error_LERP_backprop) {
+  if (!en_pose_linear_interpolate_backprop) {
 
     auto it_kp = imu_poses.end() - 1;
     for (; it_kp != imu_poses.begin(); it_kp--) {
@@ -2723,20 +2878,24 @@ void VIOManager::compensateExtrinsicsByTimeOffset(
 
     // double time_ratio = target_offset_time / pose_at_kf.offset_time;
 
-    Eigen::Matrix4d T_prop_1 = Eigen::Matrix4d::Identity();
-    T_prop_1.block<3, 3>(0, 0) = state_propagat->rot_end;
-    T_prop_1.block<3, 1>(0, 3) = state_propagat->pos_end;
+    if (en_error_se3_backprop) {
+      Eigen::Matrix4d T_prop_1 = Eigen::Matrix4d::Identity();
+      T_prop_1.block<3, 3>(0, 0) = state_propagat->rot_end;
+      T_prop_1.block<3, 1>(0, 3) = state_propagat->pos_end;
 
-    Eigen::Matrix4d T_update_1 = Eigen::Matrix4d::Identity();
-    T_update_1.block<3, 3>(0, 0) = state->rot_end;
-    T_update_1.block<3, 1>(0, 3) = state->pos_end;
+      Eigen::Matrix4d T_update_1 = Eigen::Matrix4d::Identity();
+      T_update_1.block<3, 3>(0, 0) = state->rot_end;
+      T_update_1.block<3, 1>(0, 3) = state->pos_end;
 
-    Eigen::Matrix4d delta_T_corr = T_prop_1.inverse() * T_update_1;
-    Eigen::Matrix4d xi_corr_total = delta_T_corr.log();
-    Eigen::Matrix4d xi_corr_k = time_ratio * xi_corr_total;
-    Eigen::Matrix4d delta_T_corr_k = xi_corr_k.exp();
+      Eigen::Matrix4d delta_T_corr = T_prop_1.inverse() * T_update_1;
+      Eigen::Matrix4d xi_corr_total = delta_T_corr.log();
+      Eigen::Matrix4d xi_corr_k = time_ratio * xi_corr_total;
+      Eigen::Matrix4d delta_T_corr_k = xi_corr_k.exp();
 
-    T_update_k = T_prop_k * delta_T_corr_k;
+      T_update_k = T_prop_k * delta_T_corr_k;
+    } else { // just IMU backprop
+      T_update_k = T_prop_k;
+    }
 
   } else {
     Eigen::Matrix4d T_state_prev = Eigen::Matrix4d::Identity();

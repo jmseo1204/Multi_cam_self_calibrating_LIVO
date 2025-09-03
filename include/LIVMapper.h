@@ -173,7 +173,7 @@ public:
   std::map<int, std::pair<double, cv::Mat>> m_candidates;
   int num_of_cam;
 
-  double time_window_ = 0.1;
+  double sync_time_window = 0.1;
   std::vector<M3D> m_R_c_l_vec;
   std::vector<V3D> m_P_c_l_vec;
 
