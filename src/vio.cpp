@@ -17,6 +17,7 @@ VIOManager::VIOManager() {
 }
 
 void VIOManager::readParameters(ros::NodeHandle &nh) {
+  nh.param<double>("vio/dudv_thres", dudv_thres, 100.0);
   nh.param<double>("vio/min_cov_pixel", min_cov_pixel, 100.0);
   nh.param<float>("vio/voxel_size", voxel_size, 0.5);
   nh.param<float>("vio/shiTomasiScore_threshold", shiTomasiScore_threshold,
@@ -552,6 +553,7 @@ void VIOManager::buildJacobianAndResiduals(const cv::Mat &img,
                     (w_ref_tl * img_ptr[-scale] + w_ref_tr * img_ptr[0] +
                      w_ref_bl * img_ptr[scale * width - scale] +
                      w_ref_br * img_ptr[scale * width]));
+
         float dv = 0.5f * ((w_ref_tl * img_ptr[scale * width] +
                             w_ref_tr * img_ptr[scale + scale * width] +
                             w_ref_bl * img_ptr[width * scale * 2] +
@@ -559,6 +561,11 @@ void VIOManager::buildJacobianAndResiduals(const cv::Mat &img,
                            (w_ref_tl * img_ptr[-scale * width] +
                             w_ref_tr * img_ptr[-scale * width + scale] +
                             w_ref_bl * img_ptr[0] + w_ref_br * img_ptr[scale]));
+
+        du = std::min(dudv_thres, du);
+        du = std::max(-dudv_thres, du);
+        dv = std::min(dudv_thres, dv);
+        dv = std::max(-dudv_thres, dv);
 
         Jimg << du, dv;
         Jimg = Jimg * state->inv_expo_time * inv_scale;

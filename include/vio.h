@@ -137,6 +137,7 @@ public:
                               const std::vector<M3D> &R_cl_vec,
                               const std::vector<V3D> &P_cl_vec);
   int grid_size;
+  double dudv_thres;
   vk::AbstractCamera *cam;
   vk::PinholeCamera *pinhole_cam;
   StatesGroup *state;
