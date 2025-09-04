@@ -753,12 +753,19 @@ void VIOManager::computeJacobianAndUpdateEKF(
           R_inv_z(i) = z_all(i) * inv_R_i;
         }
         auto &&HTz = H_sub_T * R_inv_z;
-        auto vec = (*state_propagat) - (*state);
         G.block<DIM_STATE, 7>(0, 0) =
             K_1.block<DIM_STATE, 7>(0, 0) * H_T_H.block<7, 7>(0, 0);
         MD(DIM_STATE, 1)
-        solution = -K_1.block<DIM_STATE, 7>(0, 0) * HTz + vec -
-                   G.block<DIM_STATE, 7>(0, 0) * vec.block<7, 1>(0, 0);
+        solution = -K_1.block<DIM_STATE, 7>(0, 0) * HTz; // data term
+        auto vec = (*state_propagat) - (*state);
+        solution += vec - G.block<DIM_STATE, 7>(0, 0) * vec.block<7, 1>(0, 0);
+        // solution +=
+        // K_1 * (*state_propagat).cov.inverse() * vec; // prior
+        // regularization
+
+        // 이거 추가하면 G를 P_IMU로
+        // 구성해야하는데, 애초부터 식이 잘못됨. 그리고 IMU 너무 부정확해서
+        // prior이 무의미
 
         std::cout << "state update" << std::endl;
 
@@ -1129,13 +1136,6 @@ void VIOManager::retrieveFromVisualSparseMap(
       if (!pt->is_normal_initialized_)
         continue;
 
-      // ================================================================== //
-      // ### 수정된 핵심 로직: 여러 패치의 평균 사용 ###
-      // ================================================================== //
-
-      // 1. 후보 패치 선정: 현재 프레임과 회전이 유사한 패치들을 최대 10개까지
-      // 선정
-
       // 현재 프레임의 월드에 대한 회전 행렬
       const M3D &current_R_w_c =
           new_frame_->T_f_w_.rotation_matrix()
@@ -1148,17 +1148,16 @@ void VIOManager::retrieveFromVisualSparseMap(
         Feature *ftr = *it;
         const M3D &past_R_w_c = ftr->T_f_w_.rotation_matrix().transpose();
 
-        // 두 회전 행렬 간의 각도 차이 계산 (Frobenius norm 이용 근사)
         // acos((tr(R1^T * R2) - 1) / 2)가 더 정확하지만, norm이 더 빠름
 
-        double rotation_diff = std::acos(
-            0.5 * ((current_R_w_c.transpose() * past_R_w_c).trace() - 1));
-        candidate_features.push_back({rotation_diff, ftr});
+        double cos_sim =
+            0.5 * ((current_R_w_c.transpose() * past_R_w_c).trace() - 1);
+        candidate_features.push_back({cos_sim, ftr});
       }
 
       // 회전 차이가 작은 순서대로 정렬
       std::sort(candidate_features.begin(), candidate_features.end(),
-                [](const auto &a, const auto &b) { return a.first < b.first; });
+                [](const auto &a, const auto &b) { return a.first > b.first; });
 
       // 최대 10개 또는 obs_ 사이즈 중 작은 값을 선택
       int num_patches_to_use = std::min((int)candidate_features.size(), 10);
@@ -1188,10 +1187,10 @@ void VIOManager::retrieveFromVisualSparseMap(
       // 첫 번째 패스: 모든 패치를 warping하고 결과 저장
       for (int p_idx = 0; p_idx < num_patches_to_use; ++p_idx) {
         Feature *ref_ftr = candidate_features[p_idx].second;
-        double rotation_diff = candidate_features[p_idx].first;
+        double cos_sim = candidate_features[p_idx].first;
 
-        // 가중치 계산: cos(rotation_diff) 사용
-        double weight = std::cos(rotation_diff);
+        // 가중치 계산: cos(cos_sim) 사용
+        double weight = cos_sim;
         if (weight < 0)
           weight = 0; // 음수 가중치 방지
 

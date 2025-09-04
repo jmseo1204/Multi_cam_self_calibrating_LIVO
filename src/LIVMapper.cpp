@@ -673,6 +673,7 @@ void LIVMapper::handleLIO() {
   _pv_list = voxelmap_manager->pv_list_;
 
   MeasureGroup &meas = LidarMeasures.measures.back();
+  double prev_lio_update_time = LidarMeasures.last_lio_update_time;
   LidarMeasures.last_lio_update_time = meas.lio_time;
   std::cout << std::setprecision(7) << std::fixed
             << "last_lio_update_time updated: "
@@ -722,9 +723,19 @@ void LIVMapper::handleLIO() {
   PointCloudXYZI::Ptr world_lidar(new PointCloudXYZI());
   transformLidar(_state.rot_end, _state.pos_end, feats_down_body, world_lidar);
 
+  int feats_down_size_ = feats_down_body->size();
+  vector<pointWithVar>().swap(voxelmap_manager->pv_list_);
+  voxelmap_manager->pv_list_.resize(feats_down_size_);
+  voxelmap_manager->cross_mat_list_.clear();
+  voxelmap_manager->cross_mat_list_.resize(feats_down_size_);
+  voxelmap_manager->body_cov_list_.clear();
+  voxelmap_manager->body_cov_list_.resize(feats_down_size_);
+
   for (size_t i = 0; i < world_lidar->points.size(); i++) {
     voxelmap_manager->pv_list_[i].point_w << world_lidar->points[i].x,
         world_lidar->points[i].y, world_lidar->points[i].z;
+    voxelmap_manager->pv_list_[i].timestamp =
+        prev_lio_update_time + world_lidar->points[i].curvature / 1000.0;
     if (slam_mode_ == ONLY_LIO || !mapping_after_vio) {
       M3D point_crossmat = voxelmap_manager->cross_mat_list_[i];
       M3D var = voxelmap_manager->body_cov_list_[i];
@@ -748,8 +759,8 @@ void LIVMapper::handleLIO() {
 
   _pv_list = voxelmap_manager->pv_list_;
 
-  if (en_sliding_window_ICP)
-    _pv_prev.clear();
+  // if (en_sliding_window_ICP)
+  //   _pv_prev.clear();
 
   for (const auto &point : _pv_list) {
     _pv_prev.insert({point.timestamp, point});
