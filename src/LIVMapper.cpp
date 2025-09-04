@@ -31,6 +31,7 @@ LIVMapper::LIVMapper(ros::NodeHandle &nh)
   visual_sub_map.reset(new PointCloudXYZI());
   feats_undistort.reset(new PointCloudXYZI());
   feats_down_body.reset(new PointCloudXYZI());
+  feats_down_body_prev.reset(new PointCloudXYZI());
   feats_down_world.reset(new PointCloudXYZI());
   pcl_w_wait_pub.reset(new PointCloudXYZI());
   pcl_wait_pub.reset(new PointCloudXYZI());
@@ -594,6 +595,8 @@ void LIVMapper::writeVIOStats(double cur_time,
 }
 
 void LIVMapper::handleLIO() {
+  std::cout << "handleLIO" << std::endl;
+
   euler_cur = RotMtoEuler(_state.rot_end);
   fout_pre << setw(20) << LidarMeasures.last_lio_update_time - _first_lidar_time
            << " " << euler_cur.transpose() * 57.3 << " "
@@ -625,19 +628,31 @@ void LIVMapper::handleLIO() {
 
   double t1 = omp_get_wtime();
 
-  PointCloudXYZI::Ptr feats_down_body_combined(new PointCloudXYZI());
+  int idx_offset = 0;
+
+  MeasureGroup &meas = LidarMeasures.measures.back();
+  while (!(_pv_prev.empty() ||
+           (_pv_prev.begin()->first + lidar_window_size) >= meas.lio_time)) {
+    _pv_prev.erase(_pv_prev.begin());
+  }
 
   if (en_sliding_window_ICP) {
 
-    MeasureGroup &meas = LidarMeasures.measures.back();
+    // for (int i = 0; i < feats_down_body_prev->points.size(); i++) {
+    //   feats_down_body_prev->points[i].curvature -=
+    //       LidarMeasures.last_lio_update_time - prev_lio_update_time;
+    // }
+    // while (!(feats_down_body_prev->points.empty() ||
+    //          (feats_down_body_prev->points.begin().curvature / 1000.0 +
+    //           lidar_window_size) >=
+    //              meas.lio_time - LidarMeasures.last_lio_update_time)) {
+    //   feats_down_body_prev->points.erase(feats_down_body_prev->points.begin());
+    // }
+    // idx_offset = feats_down_body_prev->points.size();
+    // *feats_down_body_prev = *feats_down_body_prev + *feats_down_body;
 
-    while (!(_pv_prev.empty() ||
-             (_pv_prev.begin()->first + lidar_window_size) >= meas.lio_time)) {
-      _pv_prev.erase(_pv_prev.begin());
-    }
+    idx_offset = _pv_prev.size();
 
-    // 1) _pv_prev 를 feats_down_body와 동일한 클래스타입으로 변환시킨 객체
-    // feats_down_world_prev 만들기
     PointCloudXYZI::Ptr feats_down_world_prev(new PointCloudXYZI());
     for (const auto &pair : _pv_prev) {
       const pointWithVar &pv = pair.second;
@@ -651,29 +666,30 @@ void LIVMapper::handleLIO() {
       feats_down_world_prev->points.push_back(point);
     }
 
-    PointCloudXYZI::Ptr feats_down_body_prev(new PointCloudXYZI());
+    feats_down_body_prev.reset(new PointCloudXYZI());
     transformLidar(_state.rot_end.transpose(),
                    -_state.rot_end.transpose() * _state.pos_end,
                    feats_down_world_prev, feats_down_body_prev);
 
-    // 2) feats_down_body 앞에  feats_down_body_prev 더하기 (i.e.
-    // feats_down_body
-    // <- concat(feats_down_body_prev, feats_down_body))
-    *feats_down_body_combined = *feats_down_body_prev + *feats_down_body;
+    *feats_down_body_prev = *feats_down_body_prev + *feats_down_body;
+
   } else {
-    *feats_down_body_combined = *feats_down_body;
+    *feats_down_body_prev = *feats_down_body;
   }
 
-  feats_down_size = feats_down_body_combined->points.size();
-  voxelmap_manager->feats_down_body_ = feats_down_body_combined;
+  // std::cout << "handleLIO1" << std::endl;
+
+  feats_down_size = feats_down_body_prev->points.size();
+  voxelmap_manager->feats_down_body_ = feats_down_body_prev;
   voxelmap_manager->feats_down_size_ = feats_down_size;
 
   voxelmap_manager->StateEstimation(state_propagat, LidarMeasures);
   _state = voxelmap_manager->state_;
   _pv_list = voxelmap_manager->pv_list_;
 
-  MeasureGroup &meas = LidarMeasures.measures.back();
-  double prev_lio_update_time = LidarMeasures.last_lio_update_time;
+  // std::cout << "handleLIO2" << std::endl;
+
+  prev_lio_update_time = LidarMeasures.last_lio_update_time;
   LidarMeasures.last_lio_update_time = meas.lio_time;
   std::cout << std::setprecision(7) << std::fixed
             << "last_lio_update_time updated: "
@@ -723,30 +739,41 @@ void LIVMapper::handleLIO() {
   PointCloudXYZI::Ptr world_lidar(new PointCloudXYZI());
   transformLidar(_state.rot_end, _state.pos_end, feats_down_body, world_lidar);
 
-  int feats_down_size_ = feats_down_body->size();
-  vector<pointWithVar>().swap(voxelmap_manager->pv_list_);
-  voxelmap_manager->pv_list_.resize(feats_down_size_);
-  voxelmap_manager->cross_mat_list_.clear();
-  voxelmap_manager->cross_mat_list_.resize(feats_down_size_);
-  voxelmap_manager->body_cov_list_.clear();
-  voxelmap_manager->body_cov_list_.resize(feats_down_size_);
+  std::vector<pointWithVar> temp_pv_list(voxelmap_manager->pv_list_.begin() +
+                                             idx_offset,
+                                         voxelmap_manager->pv_list_.end());
+  voxelmap_manager->pv_list_.swap(temp_pv_list);
+  std::vector<pointWithVar>().swap(temp_pv_list);
+
+  std::vector<M3D> temp_cross(voxelmap_manager->cross_mat_list_.begin() +
+                                  idx_offset,
+                              voxelmap_manager->cross_mat_list_.end());
+  voxelmap_manager->cross_mat_list_.swap(temp_cross);
+  std::vector<M3D>().swap(temp_cross);
+
+  std::vector<M3D> temp_body(voxelmap_manager->body_cov_list_.begin() +
+                                 idx_offset,
+                             voxelmap_manager->body_cov_list_.end());
+  voxelmap_manager->body_cov_list_.swap(temp_body);
+  std::vector<M3D>().swap(temp_body);
 
   for (size_t i = 0; i < world_lidar->points.size(); i++) {
     voxelmap_manager->pv_list_[i].point_w << world_lidar->points[i].x,
         world_lidar->points[i].y, world_lidar->points[i].z;
     voxelmap_manager->pv_list_[i].timestamp =
         prev_lio_update_time + world_lidar->points[i].curvature / 1000.0;
-    if (slam_mode_ == ONLY_LIO || !mapping_after_vio) {
-      M3D point_crossmat = voxelmap_manager->cross_mat_list_[i];
-      M3D var = voxelmap_manager->body_cov_list_[i];
-      var =
-          (_state.rot_end * extR) * var * (_state.rot_end * extR).transpose() +
+    M3D point_crossmat = voxelmap_manager->cross_mat_list_[i];
+    M3D var = voxelmap_manager->body_cov_list_[i];
+    var = (_state.rot_end * extR) * var * (_state.rot_end * extR).transpose() +
           (-point_crossmat) * _state.cov.block<3, 3>(0, 0) *
               (-point_crossmat).transpose() +
           _state.cov.block<3, 3>(3, 3);
-      voxelmap_manager->pv_list_[i].var = var;
-    }
+    voxelmap_manager->pv_list_[i].var = var;
+
+    _pv_prev.insert({_pv_list[i].timestamp, _pv_list[i]});
   }
+
+  // std::cout << "handleLIO3" << std::endl;
 
   if (slam_mode_ == ONLY_LIO || !mapping_after_vio) {
     voxelmap_manager->UpdateVoxelMap(voxelmap_manager->pv_list_);
@@ -762,27 +789,14 @@ void LIVMapper::handleLIO() {
   // if (en_sliding_window_ICP)
   //   _pv_prev.clear();
 
-  for (const auto &point : _pv_list) {
-    _pv_prev.insert({point.timestamp, point});
-  }
+  // std::cout << "handleLIO4" << std::endl;
 
-  assert(_pv_prev.begin()->first <= (_pv_prev.begin() + 1)->first);
+  assert(_pv_prev.begin()->first <= (_pv_prev.begin() + idx_offset)->first);
 
   while (!(_pv_prev.empty() || _pv_prev.rbegin()->first < 3000000000.0)) {
     auto it = _pv_prev.end();
     --it;
     _pv_prev.erase(it);
-  }
-
-  if (!en_sliding_window_ICP) {
-    while (
-        !(_pv_prev.empty() || (_pv_prev.begin()->first + lidar_window_size) >=
-                                  _pv_prev.rbegin()->first)) {
-      // std::cout << "[_pv_prev.front + lidar_window_size] : "
-      //           << _pv_prev.begin()->first + lidar_window_size << " < "
-      //           << _pv_prev.rbegin()->first << std::endl;
-      _pv_prev.erase(_pv_prev.begin());
-    }
   }
 
   double t4 = omp_get_wtime();

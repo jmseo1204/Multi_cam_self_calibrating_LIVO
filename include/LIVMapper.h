@@ -98,6 +98,7 @@ public:
   bool show_imu_path = false;
   bool only_side_cam = false;
   bool en_sliding_window_ICP = false;
+  double prev_lio_update_time = 0.0;
 
   SLAM_MODE slam_mode_;
   std::unordered_map<VOXEL_LOCATION, VoxelOctoTree *> voxel_map;
@@ -196,6 +197,7 @@ public:
   PointCloudXYZI::Ptr visual_sub_map;
   PointCloudXYZI::Ptr feats_undistort;
   PointCloudXYZI::Ptr feats_down_body;
+  PointCloudXYZI::Ptr feats_down_body_prev;
   PointCloudXYZI::Ptr feats_down_world;
   PointCloudXYZI::Ptr pcl_w_wait_pub;
   PointCloudXYZI::Ptr pcl_wait_pub;
