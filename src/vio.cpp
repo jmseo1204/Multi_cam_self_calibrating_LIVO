@@ -484,6 +484,50 @@ void VIOManager::buildJacobianAndResiduals(const cv::Mat &img,
   H_sub_cam.resize(H_DIM, 7);
   R_cam.resize(H_DIM);
 
+  // Precompute per-patch (point) average variance at the current level
+  std::vector<double> patch_avg_var(num_points, 0.0);
+  for (int i = 0; i < num_points; ++i) {
+    const std::vector<float> &pix_var = current_cam_submap->pixel_var[i];
+    double sum_var = 0.0;
+    for (int k = 0; k < patch_size_total; ++k) {
+      sum_var += static_cast<double>(pix_var[patch_size_total * level + k]);
+    }
+    patch_avg_var[static_cast<size_t>(i)] =
+        sum_var / static_cast<double>(patch_size_total);
+  }
+
+  // Rank patches by average variance (descending) and compute percentile-based
+  // weights
+  std::vector<int> order(num_points);
+  std::iota(order.begin(), order.end(), 0);
+  std::sort(order.begin(), order.end(), [&](int a, int b) {
+    return patch_avg_var[static_cast<size_t>(a)] >
+           patch_avg_var[static_cast<size_t>(b)];
+  });
+
+  std::vector<double> patch_weight(num_points, 1.0);
+  for (int rank = 0; rank < num_points; ++rank) {
+    int i = order[static_cast<size_t>(rank)];
+    double percentile = (num_points > 1) ? (static_cast<double>(rank) * 100.0 /
+                                            static_cast<double>(num_points - 1))
+                                         : 0.0;
+    // weight in [1,5]: 5 - (5-1) * n/100 = 5 - 4 * n/100
+    double w = 5.0 - 4.0 * (percentile / 100.0);
+    patch_weight[static_cast<size_t>(i)] = std::clamp(w, 1.0, 5.0);
+  }
+
+  // Distribute total covariance budget across rows based on weights
+  // Total covariance = (#rows) * img_point_cov
+  double total_cov_budget = (double)H_DIM * img_point_cov;
+  double weight_rows_sum = 0.0;
+  for (int i = 0; i < num_points; ++i) {
+    weight_rows_sum += patch_weight[static_cast<size_t>(i)] *
+                       static_cast<double>(patch_size_total);
+  }
+  double cov_per_weight = (weight_rows_sum > 0.0)
+                              ? (total_cov_budget / weight_rows_sum)
+                              : img_point_cov;
+
   // 현재 카메라 파라미터(Rci, Pci, Jdphi_dR 등)는 이 함수가 호출되기 전에
   // 외부에서 이미 설정되었다고 가정합니다.
   M3D Rwi(state->rot_end);
@@ -562,10 +606,10 @@ void VIOManager::buildJacobianAndResiduals(const cv::Mat &img,
                             w_ref_tr * img_ptr[-scale * width + scale] +
                             w_ref_bl * img_ptr[0] + w_ref_br * img_ptr[scale]));
 
-        du = std::min(dudv_thres, du);
-        du = std::max(-dudv_thres, du);
-        dv = std::min(dudv_thres, dv);
-        dv = std::max(-dudv_thres, dv);
+        du = std::min(static_cast<float>(dudv_thres), du);
+        du = std::max(static_cast<float>(-dudv_thres), du);
+        dv = std::min(static_cast<float>(dudv_thres), dv);
+        dv = std::max(static_cast<float>(-dudv_thres), dv);
 
         Jimg << du, dv;
         Jimg = Jimg * state->inv_expo_time * inv_scale;
@@ -578,9 +622,10 @@ void VIOManager::buildJacobianAndResiduals(const cv::Mat &img,
         Rcw_Pwi_hat << SKEW_SYM_MATRX(Rcw_Pwi); // p_c - t_cw
         // p_c = R_cw*p_w + t_cw
         // we need to get d_p_c/d_R_wi
-        JdR = Jdphi * Jdphi_dR +
-              Jdp * Rcw_Pwi_hat * Jdphi_dR; // delta_R_cw + delta_t_cw
-        Jdt = Jdp * Jdp_dt;
+        JdR = (Jdphi + Jdp * Rcw_Pwi_hat) *
+              Jdphi_dR; // d_R_cw/d_R + d_t_cw/dR, cf. Jdphi_dR == Rci
+        // JdR = MD(1, 3)();
+        Jdt = Jdp * Jdp_dt; // cf. Jdp_dt == R_ci * R_iw
 
         double cur_value = w_ref_tl * img_ptr[0] + w_ref_tr * img_ptr[scale] +
                            w_ref_bl * img_ptr[scale * width] +
@@ -591,9 +636,8 @@ void VIOManager::buildJacobianAndResiduals(const cv::Mat &img,
 
         z_cam(row_idx) = res;
 
-        // pixel_var을 사용하여 R_cam 설정
-        R_cam(row_idx) =
-            pixel_variance[patch_size_total * level + x * patch_size + y];
+        // Allocate per-row variance proportionally to the patch weight
+        R_cam(row_idx) = patch_weight[static_cast<size_t>(i)] * cov_per_weight;
 
         if (exposure_estimate_en) {
           H_sub_cam.block<1, 7>(row_idx, 0) << JdR, Jdt, cur_value;
@@ -634,7 +678,28 @@ void VIOManager::computeJacobianAndUpdateEKF(
       std::vector<VectorXd> R_list;
       int total_rows = 0;
 
-      // 1. 각 카메라에 대해 H와 z를 현재 state 기준으로 계산하고 수집
+      // // 현재 state의 rotation과 translation covariance 고유값 출력
+      // Eigen::Matrix3d rot_cov = state->cov.block<3, 3>(0, 0);
+      // Eigen::Matrix3d trans_cov = state->cov.block<3, 3>(3, 3);
+
+      // Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es_rot(rot_cov);
+      // Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es_trans(trans_cov);
+
+      // Eigen::Vector3d rot_eigs = es_rot.eigenvalues();
+      // Eigen::Vector3d trans_eigs = es_trans.eigenvalues();
+
+      // // 내림차순으로 정렬
+      // std::sort(rot_eigs.data(), rot_eigs.data() + 3,
+      // std::greater<double>()); std::sort(trans_eigs.data(), trans_eigs.data()
+      // + 3,
+      //           std::greater<double>());
+
+      // std::cout << "Rotation cov eigenvalues (desc): " << rot_eigs(0) << ", "
+      //           << rot_eigs(1) << ", " << rot_eigs(2) << std::endl;
+      // std::cout << "Translation cov eigenvalues (desc): " << trans_eigs(0)
+      //           << ", " << trans_eigs(1) << ", " << trans_eigs(2) <<
+      //           std::endl;
+
       for (size_t i = 0; i < imgs.size(); ++i) {
         int cam_idx = cam_indices[i];
         const cv::Mat &img = imgs[i];
@@ -687,6 +752,11 @@ void VIOManager::computeJacobianAndUpdateEKF(
         R_all.segment(current_row, R_list[i].rows()) = R_list[i];
         current_row += H_list[i].rows();
       }
+      last_cam_row_counts.clear();
+      last_cam_row_counts.reserve(H_list.size());
+      for (size_t i = 0; i < H_list.size(); ++i) {
+        last_cam_row_counts.push_back(static_cast<int>(H_list[i].rows()));
+      }
 
       double t2_jacobian = omp_get_wtime();
       compute_jacobian_time += t2_jacobian - t1_jacobian;
@@ -702,45 +772,25 @@ void VIOManager::computeJacobianAndUpdateEKF(
         H_T_H.setZero();
         G.setZero();
 
-        // R_all을 사용하여 가중치가 적용된 H_T_H 계산
-        // H_T_H = H^T * R^(-1) * H (R은 대각행렬이므로 효율적으로 계산)
-        std::cout << "mean of R: " << R_all.sum() / R_all.size() << std::endl;
+        // // R_all을 사용하여 가중치가 적용된 H_T_H 계산
+        // // H_T_H = H^T * R^(-1) * H (R은 대각행렬이므로 효율적으로 계산)
+        // std::cout << "mean of R: " << R_all.sum() / R_all.size() <<
+        // std::endl;
 
-        // R_all의 분위수 계산 및 출력
-        VectorXd R_sorted = R_all;
-        std::sort(R_sorted.data(), R_sorted.data() + R_sorted.size());
-        int n = R_sorted.size();
+        // // R_all의 분위수 계산 및 출력
+        // VectorXd R_sorted = R_all;
+        // std::sort(R_sorted.data(), R_sorted.data() + R_sorted.size());
+        // int n = R_sorted.size();
 
-        double Q0 = R_sorted(0);                   // 최솟값
-        double Q1 = R_sorted(int((n - 1) * 0.25)); // 25% 분위수
-        double Q2 = R_sorted(int((n - 1) * 0.5));  // 50% 분위수 (중앙값)
-        double Q3 = R_sorted(int((n - 1) * 0.75)); // 75% 분위수
-        double Q4 = R_sorted(n - 1);               // 최댓값
+        // double Q0 = R_sorted(0);                   // 최솟값
+        // double Q1 = R_sorted(int((n - 1) * 0.25)); // 25% 분위수
+        // double Q2 = R_sorted(int((n - 1) * 0.5));  // 50% 분위수 (중앙값)
+        // double Q3 = R_sorted(int((n - 1) * 0.75)); // 75% 분위수
+        // double Q4 = R_sorted(n - 1);               // 최댓값
 
-        std::cout << "R_all quantiles - Q0: " << Q0 << ", Q1: " << Q1
-                  << ", Q2: " << Q2 << ", Q3: " << Q3 << ", Q4: " << Q4
-                  << std::endl;
-
-        // 현재 state의 rotation과 translation covariance 고유값 출력
-        Eigen::Matrix3d rot_cov = state->cov.block<3, 3>(0, 0);
-        Eigen::Matrix3d trans_cov = state->cov.block<3, 3>(3, 3);
-
-        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es_rot(rot_cov);
-        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es_trans(trans_cov);
-
-        Eigen::Vector3d rot_eigs = es_rot.eigenvalues();
-        Eigen::Vector3d trans_eigs = es_trans.eigenvalues();
-
-        // 내림차순으로 정렬
-        std::sort(rot_eigs.data(), rot_eigs.data() + 3, std::greater<double>());
-        std::sort(trans_eigs.data(), trans_eigs.data() + 3,
-                  std::greater<double>());
-
-        std::cout << "Rotation cov eigenvalues (desc): " << rot_eigs(0) << ", "
-                  << rot_eigs(1) << ", " << rot_eigs(2) << std::endl;
-        std::cout << "Translation cov eigenvalues (desc): " << trans_eigs(0)
-                  << ", " << trans_eigs(1) << ", " << trans_eigs(2)
-                  << std::endl;
+        // std::cout << "R_all quantiles - Q0: " << Q0 << ", Q1: " << Q1
+        //           << ", Q2: " << Q2 << ", Q3: " << Q3 << ", Q4: " << Q4
+        //           << std::endl;
 
         for (int i = 0; i < total_rows; ++i) {
           // double inv_R_i = 1.0 / std::max(min_cov_pixel, R_all(i));
@@ -751,6 +801,37 @@ void VIOManager::computeJacobianAndUpdateEKF(
 
         MD(DIM_STATE, DIM_STATE) &&K_1 =
             (H_T_H + (state->cov).inverse()).inverse();
+
+        last_cam_solutions.clear();
+        last_cam_solutions.reserve(H_list.size());
+        for (size_t i = 0; i < H_list.size(); ++i) {
+          const int rows_i = static_cast<int>(H_list[i].rows());
+          if (rows_i <= 0) {
+            last_cam_solutions.emplace_back(MD(DIM_STATE, 1)::Zero());
+            continue;
+          }
+          VectorXd R_inv_z_i(rows_i);
+          for (int r = 0; r < rows_i; ++r) {
+            // R is variance per row; invert to get weight
+            R_inv_z_i(r) = z_list[i](r) / R_list[i](r);
+          }
+          VectorXd htz_i = H_list[i].transpose() * R_inv_z_i; // 7x1
+          // MD(DIM_STATE, 1) sol_i = -K_1.block<DIM_STATE, 7>(0, 0) * htz_i;
+
+          Matrix<double, 7, 7> HtRH_i = Matrix<double, 7, 7>::Zero();
+          for (int r = 0; r < rows_i; ++r) {
+            double w = 1.0 / R_list[i](r);
+            HtRH_i += w * H_list[i].row(r).transpose() * H_list[i].row(r);
+          }
+          // Per-camera K_i: embed 7x7 inverse into DIM_STATE x 7 block (others
+          // zero)
+          Matrix<double, 7, 7> Ki7 =
+              (HtRH_i + (state->cov).inverse().block<7, 7>(0, 0)).inverse();
+          MD(DIM_STATE, 7) K_i = MD(DIM_STATE, 7)::Zero();
+          K_i.block<7, 7>(0, 0) = Ki7;
+          MD(DIM_STATE, 1) sol_i = -K_i * htz_i;
+          last_cam_solutions.push_back(sol_i);
+        }
 
         // R^(-1) * z 계산
         VectorXd R_inv_z(total_rows);
@@ -767,7 +848,7 @@ void VIOManager::computeJacobianAndUpdateEKF(
         solution = -K_1.block<DIM_STATE, 7>(0, 0) * HTz + vec -
                    G.block<DIM_STATE, 7>(0, 0) * vec.block<7, 1>(0, 0);
 
-        std::cout << "state update" << std::endl;
+        // std::cout << "state update" << std::endl;
 
         (*state) += solution;
 
@@ -789,7 +870,7 @@ void VIOManager::computeJacobianAndUpdateEKF(
     }
   }
 
-  std::cout << "level update" << std::endl;
+  // std::cout << "level update" << std::endl;
   // 레벨별 평균을 멤버에 기록 (프레임 단위)
   level_avg_visual_points.clear();
   level_avg_visual_points.resize(static_cast<size_t>(patch_pyrimid_level), 0.0);
@@ -1178,9 +1259,8 @@ void VIOManager::retrieveFromVisualSparseMap(
 
       std::vector<float> avg_warped_patch(
           patch_size_total * patch_pyrimid_level, 0.0f);
-      std::vector<float> pixel_var(
-          patch_size_total * patch_pyrimid_level,
-          1000.0 * min_cov_pixel); // 분산 벡터, 기본값 MAX var
+      std::vector<float> pixel_var(patch_size_total * patch_pyrimid_level,
+                                   10000.0); // 분산 벡터, 기본값 MAX var
       std::vector<int> pixel_count(patch_size_total * patch_pyrimid_level,
                                    0); // 픽셀별 count 벡터
       std::vector<float> temp_warped_patch(warp_len);
@@ -1255,47 +1335,53 @@ void VIOManager::retrieveFromVisualSparseMap(
       if (total_weight == 0.0)
         continue;
 
-      // 두 번째 패스: 가중평균과 가중분산을 동시에 계산
+      // 두 번째 패스: median과 일반 분산을 동시에 계산
       for (size_t k = 0; k < avg_warped_patch.size(); ++k) {
-        double weighted_sum = 0.0;
-        double weight_sum = 0.0;
+        std::vector<float> valid_values;
         int valid_count = 0;
 
-        // 가중평균 계산
+        // 유효한 값들 수집
         for (int p_idx = 0; p_idx < num_patches_to_use; ++p_idx) {
           if (warped_patches[p_idx][k] > 1e-6) {
             float warped_value =
                 warped_patches[p_idx][k] * patch_inv_expos[p_idx];
-            weighted_sum += warped_value * patch_weights[p_idx];
-            weight_sum += patch_weights[p_idx];
+            valid_values.push_back(warped_value);
             valid_count++;
           }
         }
 
         if (valid_count > 0) {
-          avg_warped_patch[k] = weighted_sum / weight_sum;
+          // median 계산
+          std::sort(valid_values.begin(), valid_values.end());
+          if (valid_count % 2 == 0) {
+            avg_warped_patch[k] = (valid_values[valid_count / 2 - 1] +
+                                   valid_values[valid_count / 2]) /
+                                  2.0f;
+          } else {
+            avg_warped_patch[k] = valid_values[valid_count / 2];
+          }
           pixel_count[k] = valid_count;
 
-          // 가중분산 계산 (Welford's online algorithm 변형)
-          double weighted_variance = 0.0;
-          for (int p_idx = 0; p_idx < num_patches_to_use; ++p_idx) {
-            if (warped_patches[p_idx][k] > 1e-6) {
-              float warped_value =
-                  warped_patches[p_idx][k] * patch_inv_expos[p_idx];
-              double diff = warped_value - avg_warped_patch[k];
-              weighted_variance += patch_weights[p_idx] * diff * diff;
-            }
+          // 일반 분산 계산
+          double mean = 0.0;
+          for (float val : valid_values) {
+            mean += val;
           }
+          mean /= valid_count;
+
+          double variance = 0.0;
+          for (float val : valid_values) {
+            double diff = val - mean;
+            variance += diff * diff;
+          }
+          variance /= valid_count;
 
           if (valid_count == 0) {
-            pixel_var[k] =
-                1000.0 * min_cov_pixel; // var INF -> impact minimized
+            pixel_var[k] = 1000.0; // var INF -> impact minimized
           } else if (valid_count <= 3) {
-            pixel_var[k] = 3.0 * min_cov_pixel;
+            pixel_var[k] = 10.0;
           } else {
-            pixel_var[k] =
-                std::max(weighted_variance / weight_sum * img_point_cov,
-                         min_cov_pixel); // 가중분산 정규화
+            pixel_var[k] = variance;
           }
         }
       }

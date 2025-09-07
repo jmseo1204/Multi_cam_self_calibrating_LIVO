@@ -269,6 +269,11 @@ public:
   // After each processMultiCamVIO call, this will contain the per-level
   // average of total row counts over iterations at that level for the frame.
   std::vector<double> level_avg_visual_points;
+
+  // Per-camera statistics for the last EKF update
+  std::vector<int> last_cam_row_counts; // rows per camera (in imgs order)
+  std::vector<Matrix<double, DIM_STATE, 1>>
+      last_cam_solutions; // -K1*H^T*R^-1*z per cam
 };
 typedef std::shared_ptr<VIOManager> VIOManagerPtr;
 
