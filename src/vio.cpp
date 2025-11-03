@@ -27,6 +27,7 @@ void VIOManager::readParameters(ros::NodeHandle &nh) {
   nh.param<bool>("vio/dismiss_non_outofbound_pixels_from_ref_patch",
                  dismiss_non_outofbound_pixels_from_ref_patch, false);
   nh.param<bool>("vio/en_error_se3_backprop", en_error_se3_backprop, false);
+  nh.param<bool>("vio/en_dynamic_pixel_var", en_dynamic_pixel_var, false);
   nh.param<bool>("vio/en_pose_linear_interpolate_backprop",
                  en_pose_linear_interpolate_backprop, false);
 
@@ -585,8 +586,13 @@ void VIOManager::buildJacobianAndResiduals(const cv::Mat &img,
         z_cam(row_idx) = res;
 
         // pixel_var을 사용하여 R_cam 설정
-        R_cam(row_idx) =
-            pixel_variance[patch_size_total * level + x * patch_size + y];
+
+        if (en_dynamic_pixel_var) {
+          R_cam(row_idx) =
+              pixel_variance[patch_size_total * level + x * patch_size + y];
+        } else {
+          R_cam(row_idx) = img_point_cov;
+        }
 
         if (exposure_estimate_en) {
           H_sub_cam.block<1, 7>(row_idx, 0) << JdR, Jdt, cur_value;
@@ -697,7 +703,8 @@ void VIOManager::computeJacobianAndUpdateEKF(
 
         // R_all을 사용하여 가중치가 적용된 H_T_H 계산
         // H_T_H = H^T * R^(-1) * H (R은 대각행렬이므로 효율적으로 계산)
-        std::cout << "mean of R: " << R_all.sum() / R_all.size() << std::endl;
+        // std::cout << "mean of R: " << R_all.sum() / R_all.size() <<
+        // std::endl;
 
         // R_all의 분위수 계산 및 출력
         VectorXd R_sorted = R_all;
@@ -710,9 +717,9 @@ void VIOManager::computeJacobianAndUpdateEKF(
         double Q3 = R_sorted(int((n - 1) * 0.75)); // 75% 분위수
         double Q4 = R_sorted(n - 1);               // 최댓값
 
-        std::cout << "R_all quantiles - Q0: " << Q0 << ", Q1: " << Q1
-                  << ", Q2: " << Q2 << ", Q3: " << Q3 << ", Q4: " << Q4
-                  << std::endl;
+        // std::cout << "R_all quantiles - Q0: " << Q0 << ", Q1: " << Q1
+        //           << ", Q2: " << Q2 << ", Q3: " << Q3 << ", Q4: " << Q4
+        //           << std::endl;
 
         // 현재 state의 rotation과 translation covariance 고유값 출력
         Eigen::Matrix3d rot_cov = state->cov.block<3, 3>(0, 0);
@@ -729,11 +736,12 @@ void VIOManager::computeJacobianAndUpdateEKF(
         std::sort(trans_eigs.data(), trans_eigs.data() + 3,
                   std::greater<double>());
 
-        std::cout << "Rotation cov eigenvalues (desc): " << rot_eigs(0) << ", "
-                  << rot_eigs(1) << ", " << rot_eigs(2) << std::endl;
-        std::cout << "Translation cov eigenvalues (desc): " << trans_eigs(0)
-                  << ", " << trans_eigs(1) << ", " << trans_eigs(2)
-                  << std::endl;
+        // std::cout << "Rotation cov eigenvalues (desc): " << rot_eigs(0) << ",
+        // "
+        //           << rot_eigs(1) << ", " << rot_eigs(2) << std::endl;
+        // std::cout << "Translation cov eigenvalues (desc): " << trans_eigs(0)
+        //           << ", " << trans_eigs(1) << ", " << trans_eigs(2)
+        //           << std::endl;
 
         for (int i = 0; i < total_rows; ++i) {
           // double inv_R_i = 1.0 / std::max(min_cov_pixel, R_all(i));

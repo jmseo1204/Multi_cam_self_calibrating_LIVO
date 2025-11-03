@@ -1,0 +1,29 @@
+<launch>
+<!-- Launch file for Livox AVIA LiDAR -->
+
+	<arg name="rviz" default="true" />
+
+	<rosparam command="load" file="$(find fast_livo)/config/newer.yaml" />
+
+	<!-- Decompress compressed images -->
+	<node pkg="image_transport" type="republish" name="republish_cam0" output="screen" respawn="true"
+		  args="compressed in:=/alphasense_driver_ros/cam0 raw out:=/alphasense_driver_ros/cam0" />
+	<node pkg="image_transport" type="republish" name="republish_cam1" output="screen" respawn="true"
+		  args="compressed in:=/alphasense_driver_ros/cam1 raw out:=/alphasense_driver_ros/cam1" />
+	<node pkg="image_transport" type="republish" name="republish_cam3" output="screen" respawn="true"
+		  args="compressed in:=/alphasense_driver_ros/cam3 raw out:=/alphasense_driver_ros/cam3" />
+	<node pkg="image_transport" type="republish" name="republish_cam4" output="screen" respawn="true"
+		  args="compressed in:=/alphasense_driver_ros/cam4 raw out:=/alphasense_driver_ros/cam4" />
+
+	<node pkg="fast_livo" type="fastlivo_mapping" name="laserMapping" output="screen">
+		<rosparam file="$(find fast_livo)/config/camera_newer_1.yaml" />
+		<rosparam file="$(find fast_livo)/config/camera_newer_2.yaml" />
+		<rosparam file="$(find fast_livo)/config/camera_newer_3.yaml" />
+		<rosparam file="$(find fast_livo)/config/camera_newer_4.yaml" />
+	</node>
+	
+	<group if="$(arg rviz)">
+		<node launch-prefix="nice" pkg="rviz" type="rviz" name="rviz" args="-d $(find fast_livo)/rviz_cfg/newer.rviz" />
+	</group>
+
+</launch> 	

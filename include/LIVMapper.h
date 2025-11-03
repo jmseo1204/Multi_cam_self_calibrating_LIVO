@@ -59,7 +59,7 @@ public:
   void imu_prop_callback(const ros::TimerEvent &e);
   void transformLidar(const Eigen::Matrix3d rot, const Eigen::Vector3d t,
                       const PointCloudXYZI::Ptr &input_cloud,
-                      PointCloudXYZI::Ptr &trans_cloud);
+                      PointCloudXYZI::Ptr &trans_cloud, bool default_il = true);
   void pointBodyToWorld(const PointType &pi, PointType &po);
 
   void RGBpointBodyToWorld(PointType const *const pi, PointType *const po);

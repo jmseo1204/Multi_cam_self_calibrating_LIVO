@@ -415,71 +415,73 @@ void LIVMapper::handleVIO() {
   writeVIOStats(LidarMeasures.last_lio_update_time, rot_cov_pre, trans_cov_pre,
                 rot_cov_post, trans_cov_post, num_of_cam, m.img_camera_indices);
 
-  if (mapping_after_vio) {
-    PointCloudXYZI::Ptr world_lidar(new PointCloudXYZI());
-    transformLidar(_state.rot_end, _state.pos_end, feats_down_body,
-                   world_lidar);
-    for (size_t i = 0; i < world_lidar->points.size(); i++) {
-      voxelmap_manager->pv_list_[i].point_w << world_lidar->points[i].x,
-          world_lidar->points[i].y, world_lidar->points[i].z;
-      M3D point_crossmat = voxelmap_manager->cross_mat_list_[i];
-      M3D var = voxelmap_manager->body_cov_list_[i];
-      var =
-          (_state.rot_end * extR) * var * (_state.rot_end * extR).transpose() +
-          (-point_crossmat) * _state.cov.block<3, 3>(0, 0) *
-              (-point_crossmat).transpose() +
-          _state.cov.block<3, 3>(3, 3);
-      voxelmap_manager->pv_list_[i].var = var;
-    }
+  // if (mapping_after_vio) {
+  //   PointCloudXYZI::Ptr world_lidar(new PointCloudXYZI());
+  //   transformLidar(_state.rot_end, _state.pos_end, feats_down_body,
+  //                  world_lidar);
+  //   for (size_t i = 0; i < world_lidar->points.size(); i++) {
+  //     voxelmap_manager->pv_list_[i].point_w << world_lidar->points[i].x,
+  //         world_lidar->points[i].y, world_lidar->points[i].z;
+  //     M3D point_crossmat = voxelmap_manager->cross_mat_list_[i];
+  //     M3D var = voxelmap_manager->body_cov_list_[i];
+  //     var =
+  //         (_state.rot_end * extR) * var * (_state.rot_end * extR).transpose()
+  //         +
+  //         (-point_crossmat) * _state.cov.block<3, 3>(0, 0) *
+  //             (-point_crossmat).transpose() +
+  //         _state.cov.block<3, 3>(3, 3);
+  //     voxelmap_manager->pv_list_[i].var = var;
+  //   }
 
-    voxelmap_manager->UpdateVoxelMap(voxelmap_manager->pv_list_);
-    if (voxelmap_manager->config_setting_.map_sliding_en) {
-      voxelmap_manager->mapSliding();
-    }
+  //   voxelmap_manager->UpdateVoxelMap(voxelmap_manager->pv_list_);
+  //   if (voxelmap_manager->config_setting_.map_sliding_en) {
+  //     voxelmap_manager->mapSliding();
+  //   }
 
-    std::cout << "[ AFTER VIO ] Update Voxel Map" << std::endl;
+  //   std::cout << "[ AFTER VIO ] Update Voxel Map" << std::endl;
 
-    _pv_list = voxelmap_manager->pv_list_;
+  //   _pv_list = voxelmap_manager->pv_list_;
 
-    for (const auto &point : _pv_list) {
-      auto it = _pv_prev.find(point.timestamp);
-      if (it == _pv_prev.end()) {
-        continue;
-      } else {
-        auto &pv = it->second;
-        pv.point_w << point.point_w(0), point.point_w(1), point.point_w(2);
-        pv.var = point.var;
-      }
-    }
+  //   for (const auto &point : _pv_list) {
+  //     auto it = _pv_prev.find(point.timestamp);
+  //     if (it == _pv_prev.end()) {
+  //       continue;
+  //     } else {
+  //       auto &pv = it->second;
+  //       pv.point_w << point.point_w(0), point.point_w(1), point.point_w(2);
+  //       pv.var = point.var;
+  //     }
+  //   }
 
-    PointCloudXYZI::Ptr laserCloudWorld(new PointCloudXYZI());
+  //   PointCloudXYZI::Ptr laserCloudWorld(new PointCloudXYZI());
 
-    if (dense_map_en) {
-      PointCloudXYZI::Ptr laserCloudFullRes(feats_undistort);
-      int size = laserCloudFullRes->points.size();
-      laserCloudWorld = PointCloudXYZI::Ptr(new PointCloudXYZI(size, 1));
-      for (int i = 0; i < size; i++) {
-        RGBpointBodyToWorld(&laserCloudFullRes->points[i],
-                            &laserCloudWorld->points[i]);
-      }
+  //   if (dense_map_en) {
+  //     PointCloudXYZI::Ptr laserCloudFullRes(feats_undistort);
+  //     int size = laserCloudFullRes->points.size();
+  //     laserCloudWorld = PointCloudXYZI::Ptr(new PointCloudXYZI(size, 1));
+  //     for (int i = 0; i < size; i++) {
+  //       RGBpointBodyToWorld(&laserCloudFullRes->points[i],
+  //                           &laserCloudWorld->points[i]);
+  //     }
 
-    } else {
-      for (const auto &pair : _pv_prev) {
-        const auto &pv = pair.second;
-        PointType point;
-        point.x = pv.point_w(0);
-        point.y = pv.point_w(1);
-        point.z = pv.point_w(2);
-        // point.intensity = pv.intensity;
-        // point.curvature = pv.timestamp;
-        laserCloudWorld->points.push_back(point);
-      }
-    }
+  //   } else {
+  //     for (const auto &pair : _pv_prev) {
+  //       const auto &pv = pair.second;
+  //       PointType point;
+  //       point.x = pv.point_w(0);
+  //       point.y = pv.point_w(1);
+  //       point.z = pv.point_w(2);
+  //       // point.intensity = pv.intensity;
+  //       // point.curvature = pv.timestamp;
+  //       laserCloudWorld->points.push_back(point);
+  //     }
+  //   }
 
-    // std::cout << "handleLIO _pv_prev size: " << _pv_prev.size() << std::endl;
+  //   // std::cout << "handleLIO _pv_prev size: " << _pv_prev.size() <<
+  //   std::endl;
 
-    *pcl_w_wait_pub = *laserCloudWorld;
-  }
+  //   *pcl_w_wait_pub = *laserCloudWorld;
+  // }
 
   std::cout << "[ VIO ] Raw feature num: " << pcl_w_wait_pub->points.size()
             << std::endl;
@@ -667,9 +669,11 @@ void LIVMapper::handleLIO() {
     }
 
     feats_down_body_prev.reset(new PointCloudXYZI());
-    transformLidar(_state.rot_end.transpose(),
-                   -_state.rot_end.transpose() * _state.pos_end,
-                   feats_down_world_prev, feats_down_body_prev);
+    M3D R_lw((_state.rot_end * extR).transpose());
+    V3D T_li(-extR.transpose() * extT);
+
+    transformLidar(R_lw, -R_lw * (_state.rot_end * extT + _state.pos_end),
+                   feats_down_world_prev, feats_down_body_prev, false);
 
     *feats_down_body_prev = *feats_down_body_prev + *feats_down_body;
 
@@ -736,41 +740,52 @@ void LIVMapper::handleLIO() {
 
   double t3 = omp_get_wtime();
 
-  PointCloudXYZI::Ptr world_lidar(new PointCloudXYZI());
-  transformLidar(_state.rot_end, _state.pos_end, feats_down_body, world_lidar);
+  // PointCloudXYZI::Ptr world_lidar(new PointCloudXYZI());
+  // transformLidar(_state.rot_end * extR, _state.rot_end * extT +
+  // _state.pos_end, feats_down_body, world_lidar);
 
-  std::vector<pointWithVar> temp_pv_list(voxelmap_manager->pv_list_.begin() +
-                                             idx_offset,
-                                         voxelmap_manager->pv_list_.end());
-  voxelmap_manager->pv_list_.swap(temp_pv_list);
-  std::vector<pointWithVar>().swap(temp_pv_list);
+  // std::vector<pointWithVar> temp_pv_list(voxelmap_manager->pv_list_.begin() +
+  //                                            idx_offset,
+  //                                        voxelmap_manager->pv_list_.end());
+  // voxelmap_manager->pv_list_.swap(temp_pv_list);
+  // std::vector<pointWithVar>().swap(temp_pv_list);
 
-  std::vector<M3D> temp_cross(voxelmap_manager->cross_mat_list_.begin() +
-                                  idx_offset,
-                              voxelmap_manager->cross_mat_list_.end());
-  voxelmap_manager->cross_mat_list_.swap(temp_cross);
-  std::vector<M3D>().swap(temp_cross);
+  // std::vector<M3D> temp_cross(voxelmap_manager->cross_mat_list_.begin() +
+  //                                 idx_offset,
+  //                             voxelmap_manager->cross_mat_list_.end());
+  // voxelmap_manager->cross_mat_list_.swap(temp_cross);
+  // std::vector<M3D>().swap(temp_cross);
 
-  std::vector<M3D> temp_body(voxelmap_manager->body_cov_list_.begin() +
-                                 idx_offset,
-                             voxelmap_manager->body_cov_list_.end());
-  voxelmap_manager->body_cov_list_.swap(temp_body);
-  std::vector<M3D>().swap(temp_body);
+  // std::vector<M3D> temp_body(voxelmap_manager->body_cov_list_.begin() +
+  //                                idx_offset,
+  //                            voxelmap_manager->body_cov_list_.end());
+  // voxelmap_manager->body_cov_list_.swap(temp_body);
+  // std::vector<M3D>().swap(temp_body);
 
-  for (size_t i = 0; i < world_lidar->points.size(); i++) {
-    voxelmap_manager->pv_list_[i].point_w << world_lidar->points[i].x,
-        world_lidar->points[i].y, world_lidar->points[i].z;
-    voxelmap_manager->pv_list_[i].timestamp =
-        prev_lio_update_time + world_lidar->points[i].curvature / 1000.0;
-    M3D point_crossmat = voxelmap_manager->cross_mat_list_[i];
-    M3D var = voxelmap_manager->body_cov_list_[i];
-    var = (_state.rot_end * extR) * var * (_state.rot_end * extR).transpose() +
-          (-point_crossmat) * _state.cov.block<3, 3>(0, 0) *
-              (-point_crossmat).transpose() +
-          _state.cov.block<3, 3>(3, 3);
-    voxelmap_manager->pv_list_[i].var = var;
+  // for (size_t i = 0; i < world_lidar->points.size(); i++) {
+  //   voxelmap_manager->pv_list_[i].point_w << world_lidar->points[i].x,
+  //       world_lidar->points[i].y, world_lidar->points[i].z;
+  //   voxelmap_manager->pv_list_[i].timestamp =
+  //       prev_lio_update_time + world_lidar->points[i].curvature / 1000.0;
+  //   M3D point_crossmat = voxelmap_manager->cross_mat_list_[i];
+  //   M3D var = voxelmap_manager->body_cov_list_[i];
+  //   var = (_state.rot_end * extR) * var * (_state.rot_end * extR).transpose()
+  //   +
+  //         (-point_crossmat) * _state.cov.block<3, 3>(0, 0) *
+  //             (-point_crossmat).transpose() +
+  //         _state.cov.block<3, 3>(3, 3);
+  //   voxelmap_manager->pv_list_[i].var = var;
 
-    _pv_prev.insert({_pv_list[i].timestamp, _pv_list[i]});
+  //   _pv_prev.insert({_pv_list[i].timestamp, _pv_list[i]});
+  // }
+
+  for (auto it = _pv_list.begin() + idx_offset; it != _pv_list.end(); ++it) {
+    auto &pv = *it;
+    PointType point;
+    point.x = pv.point_w(0);
+    point.y = pv.point_w(1);
+    point.z = pv.point_w(2);
+    _pv_prev.insert({pv.timestamp, pv});
   }
 
   // std::cout << "handleLIO3" << std::endl;
@@ -792,12 +807,19 @@ void LIVMapper::handleLIO() {
   // std::cout << "handleLIO4" << std::endl;
 
   assert(_pv_prev.begin()->first <= (_pv_prev.begin() + idx_offset)->first);
+  auto it = _pv_prev.begin();
+  // for (size_t i = 0; i < _pv_prev.size(); i++) {
+  //   // assert(_pv_prev[i - 1].first <= _pv_prev[i].first);
+  //   it++;
+  //   if (i % 1000 == 0)
+  //     std::cout << it->first << std::endl;
+  // }
 
-  while (!(_pv_prev.empty() || _pv_prev.rbegin()->first < 3000000000.0)) {
-    auto it = _pv_prev.end();
-    --it;
-    _pv_prev.erase(it);
-  }
+  // while (!(_pv_prev.empty() || _pv_prev.rbegin()->first < 3000000000.0)) {
+  //   auto it = _pv_prev.end();
+  //   --it;
+  //   _pv_prev.erase(it);
+  // }
 
   double t4 = omp_get_wtime();
 
@@ -957,11 +979,11 @@ void LIVMapper::run() {
   //                               std::to_string(ros::Time::now().toSec()) +
   //                               "_tum.txt";
   std::string tum_output_path =
-      "/mnt/c/Users/USER/Desktop/fast_livo2/results/" +
+      "/mnt/c/Users/USER/Desktop/sliding_fast_livo2/results/" +
       std::to_string(int(ros::Time::now().toSec()) % 10000) + ".txt";
 
   std::string stat_output_path =
-      "/mnt/c/Users/USER/Desktop/fast_livo2/results/" +
+      "/mnt/c/Users/USER/Desktop/sliding_fast_livo2/results/" +
       std::to_string(int(ros::Time::now().toSec()) % 10000) + "_stat.txt";
 
   // set the VIO stats output path for writeVIOStats
@@ -1084,13 +1106,14 @@ void LIVMapper::imu_prop_callback(const ros::TimerEvent &e) {
 void LIVMapper::transformLidar(const Eigen::Matrix3d rot,
                                const Eigen::Vector3d t,
                                const PointCloudXYZI::Ptr &input_cloud,
-                               PointCloudXYZI::Ptr &trans_cloud) {
+                               PointCloudXYZI::Ptr &trans_cloud,
+                               bool default_il) {
   PointCloudXYZI().swap(*trans_cloud);
   trans_cloud->reserve(input_cloud->size());
   for (size_t i = 0; i < input_cloud->size(); i++) {
     pcl::PointXYZINormal p_c = input_cloud->points[i];
     Eigen::Vector3d p(p_c.x, p_c.y, p_c.z);
-    p = (rot * (extR * p + extT) + t);
+    p = (rot * (default_il ? (extR * p + extT) : p) + t);
     PointType pi;
     pi.x = p(0);
     pi.y = p(1);

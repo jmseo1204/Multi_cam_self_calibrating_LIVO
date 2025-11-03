@@ -519,8 +519,9 @@ void ImuProcess::UndistortPcl(LidarMeasureGroup &lidar_meas,
    * update ***/
   if (lidar_meas.lio_vio_flg == LIO) {
     auto it_pcl = pcl_wait_proc.points.end() - 1;
-    M3D extR_Ri(Lid_rot_to_IMU.transpose() * state_inout.rot_end.transpose());
-    V3D exrR_extT(Lid_rot_to_IMU.transpose() * Lid_offset_to_IMU);
+    M3D R_lw(Lid_rot_to_IMU.transpose() *
+             state_inout.rot_end.transpose()); // R_lw
+    V3D T_li(-Lid_rot_to_IMU.transpose() * Lid_offset_to_IMU);
     for (auto it_kp = IMUpose.end() - 1; it_kp != IMUpose.begin(); it_kp--) {
       auto head = it_kp - 1;
       auto tail = it_kp;
@@ -535,7 +536,7 @@ void ImuProcess::UndistortPcl(LidarMeasureGroup &lidar_meas,
         dt = it_pcl->curvature / double(1000) - head->offset_time;
 
         /* Transform to the 'end' frame */
-        M3D R_i(R_imu * Exp(angvel_avr, dt));
+        M3D R_i(R_imu * Exp(angvel_avr, dt)); // 해당 시점의 state_inout.rot_end
         V3D T_ei(pos_imu + vel_imu * dt + 0.5 * acc_imu * dt * dt -
                  state_inout.pos_end);
 
@@ -544,9 +545,8 @@ void ImuProcess::UndistortPcl(LidarMeasureGroup &lidar_meas,
         // (state_inout.rot_end.transpose() * (R_i * (Lid_rot_to_IMU * P_i +
         // Lid_offset_to_IMU) + T_ei) - Lid_offset_to_IMU);
         V3D P_compensate =
-            (extR_Ri *
-                 (R_i * (Lid_rot_to_IMU * P_i + Lid_offset_to_IMU) + T_ei) -
-             exrR_extT);
+            (R_lw * (R_i * (Lid_rot_to_IMU * P_i + Lid_offset_to_IMU) + T_ei) +
+             T_li);
 
         /// save Undistorted points and their rotation
         it_pcl->x = P_compensate(0);

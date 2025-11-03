@@ -226,7 +226,7 @@ public:
                        LidarMeasureGroup &lidar_meas);
   void TransformLidar(const Eigen::Matrix3d rot, const Eigen::Vector3d t,
                       const PointCloudXYZI::Ptr &input_cloud,
-                      PointCloudXYZI::Ptr &trans_cloud);
+                      PointCloudXYZI::Ptr &trans_cloud, bool default_il = true);
 
   void BuildVoxelMap();
   V3F RGBFromVoxel(const V3D &input_point);

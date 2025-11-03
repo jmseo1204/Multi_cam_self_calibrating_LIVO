@@ -381,8 +381,12 @@ void VoxelMapManager::StateEstimation(StatesGroup &state_propagat,
     // pcl::PointCloud<pcl::PointXYZI>::Ptr world_lidar(new
     // pcl::PointCloud<pcl::PointXYZI>);
     PointCloudXYZI::Ptr world_lidar(new PointCloudXYZI());
+    // TransformLidar(state_.rot_end * extR_,
+    //                state_.rot_end * extT_ + state_.pos_end, feats_down_body_,
+    //                world_lidar);
     TransformLidar(state_.rot_end, state_.pos_end, feats_down_body_,
                    world_lidar);
+
     M3D rot_var = state_.cov.block<3, 3>(0, 0);
     M3D t_var = state_.cov.block<3, 3>(3, 3);
     for (size_t i = 0; i < feats_down_body_->size(); i++) {
@@ -561,13 +565,15 @@ void VoxelMapManager::StateEstimation(StatesGroup &state_propagat,
 void VoxelMapManager::TransformLidar(const Eigen::Matrix3d rot,
                                      const Eigen::Vector3d t,
                                      const PointCloudXYZI::Ptr &input_cloud,
-                                     PointCloudXYZI::Ptr &trans_cloud) {
+                                     PointCloudXYZI::Ptr &trans_cloud,
+                                     bool default_il) {
   PointCloudXYZI().swap(*trans_cloud);
   trans_cloud->reserve(input_cloud->size());
   for (size_t i = 0; i < input_cloud->size(); i++) {
     pcl::PointXYZINormal p_c = input_cloud->points[i];
     Eigen::Vector3d p(p_c.x, p_c.y, p_c.z);
-    p = (rot * (extR_ * p + extT_) + t);
+
+    p = (rot * (default_il ? (extR_ * p + extT_) : p) + t);
     pcl::PointXYZINormal pi;
     pi.x = p(0);
     pi.y = p(1);

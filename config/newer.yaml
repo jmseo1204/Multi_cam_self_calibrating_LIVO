@@ -1,19 +1,19 @@
 common:
   # 4개의 카메라 토픽을 리스트로 정의
   
-  img_topic: "/alphasense/cam0/image_raw" # ONLY_IF num_of_cam == 1 
+  img_topic: "/alphasense_driver_ros/cam0" # ONLY_IF num_of_cam == 1 
   img_topics: 
-    - "/alphasense/cam0/image_raw" 
-    - "/alphasense/cam2/image_raw" 
-    - "/alphasense/cam3/image_raw" 
-    - "/alphasense/cam4/image_raw" 
-  lid_topic: "/hesai/pandar"
-  imu_topic: "/alphasense/imu"
+    - "/alphasense_driver_ros/cam0" 
+    - "/alphasense_driver_ros/cam1" 
+    - "/alphasense_driver_ros/cam3" 
+    - "/alphasense_driver_ros/cam4" 
+  lid_topic: "/os_cloud_node/points"
+  imu_topic: "/alphasense_driver_ros/imu"
   num_of_cam: 4 # 카메라 개수 명시
   img_en: 1
   lidar_en: 1
   ros_driver_bug_fix: false
-  sync_time_window: 0.01
+  sync_time_window: 0.05
   minimum_simultaneous_frame_num: 1
   lidar_window_size: 0.1
   en_sliding_window_ICP: false
@@ -22,28 +22,28 @@ common:
 
 extrin_calib:
   # LiDAR to IMU Extrinsics (T_il)
-  extrinsic_T: [-0.001, -0.00855, 0.055] 
-  extrinsic_R: [0, -1, 0, -1, 0, 0, 0, 0, -1]
+  extrinsic_T: [-0.037, -0.008, -0.026]
+  extrinsic_R: [1, 0, 0, 0, 1, 0, 0, 0, 1]
 
-  R_cl_0: [ -0.999926,  -0.00670802, 0.0101073,
-         -0.0100912, -0.00242564, -0.999946,
-          0.00673218,-0.999975, 0.00235777 ]
-  P_cl_0: [ -0.0549762, 0.0675401, -0.0520599 ]
+  R_cl_0: [-0.001070287110747692, 0.9999775099474943, -0.006620731433109983, 
+    -0.007807037138439998, 0.006612177862667906, 0.9999476632679489, 
+    0.999968951846316, 0.001121919391599835, 0.007799784629024531]
+  P_cl_0: [-0.05475654, -0.01627072, -0.08341641]
 
-  R_cl_1: [-0.0042340516721277015, -0.9999897552434941, 0.0016006918802386892,
-    0.9999871881804255, -0.004238470700886935, -0.0027674611333545654,
-    0.0027742172670246527, 0.0015889537990238962, 0.9999948894591316]
-  P_cl_1: [-0.0068618144566339415, -0.007931259020147333, -0.034124943940492]
+  R_cl_1: [0.009858324983608086, 0.9999487481397873, 0.002305324747244264, 
+    -0.0009990649217994085, -0.002295586068900013, 0.9999968660720306, 
+    0.9999509064438115, -0.009860597257416004, 0.0009763830843686483]
+  P_cl_1: [ 0.0553556,  -0.01590483, -0.08328761]
 
-  R_cl_2: [-0.007396041673023157, 0.9998916894135631, -0.01272430781071447,
-    0.002363530935315569, -0.01270714046408309, -0.9999164676625464,
-    -0.9999698556902047, -0.007425498159515405, -0.002269292399476633]
-  P_cl_2: [-0.0030245656200529533, 0.011180668261220912, -0.05718309342102409]
+  R_cl_2: [-0.9999770395874403, 0.0008535162098522019, 0.006722485256069301,
+    0.006713129004657366, -0.010528556524205824, 0.9999220386592563,
+    0.0009242277345858016, 0.9999442089474772, 0.010522585019780083]
+  P_cl_2: [ 0.0310896,  -0.01375924, -0.08075841]
 
-  R_cl_3: [ 0.000942427662931895, -0.9999880402484476, 0.004799082221662863,
-    0.0021900897852221157, -0.004797008865106434, -0.9999860960096802, 
-    0.9999971576643774, 0.0009529249803788974,  0.0021855427584387965]
-  P_cl_3: [0.006416247252956556, 0.01670064540948574, -0.07488037729385075]
+  R_cl_3: [0.9999608005152463, -0.00764705302431521, -0.004463184171536622, 
+    0.004463831033452346, 6.752387667768867e-05, 0.9999900347768615, 
+    -0.007646675448227889, -0.9999707585827533, 0.00010165638238096575]
+  P_cl_3: [-0.03038673, -0.0146311,  -0.09841961]
 
 # [Deprecated]
 
@@ -69,22 +69,21 @@ extrin_calib:
 
 time_offset:
   imu_time_offset: 0.0
-  img_time_offset: 0.00019
+  img_time_offset: 0.0018
   exposure_time_init: 0.0
 
-preprocess:
-  hilti_en: true
-  point_filter_num: 1
-  filter_size_surf: 0.1 # 0.2
-  lidar_type: 5 # HesaiXT32
-  scan_line: 32
-  blind: 0.6 # 0.1 0.3
+preprocess: 
+  point_filter_num: 2
+  filter_size_surf: 0.1
+  lidar_type: 3 # Ouster
+  scan_line: 128
+  blind: 0.5 
  
 vio:
   max_iterations: 5
   outlier_threshold: 500
-  img_point_cov: 1000
-  patch_size: 8
+  img_point_cov: 100
+  patch_size: 4
   patch_pyrimid_level: 4
   normal_en: true
   raycast_en: false
@@ -92,7 +91,8 @@ vio:
   exposure_estimate_en: true
   inv_expo_cov: 0.1
 
-  min_cov_pixel: 1000
+  dudv_thres: 100.0
+  min_cov_pixel: 100
   shiTomasiScore_threshold: 0.0
   min_depth_threshold: 0.0
   max_depth_threshold: 100.0
@@ -100,7 +100,6 @@ vio:
   dismiss_non_outofbound_pixels_from_ref_patch: true
   en_error_se3_backprop: true
   en_pose_linear_interpolate_backprop: false
-  en_dynamic_pixel_var: false
 
 imu:
   imu_en: true

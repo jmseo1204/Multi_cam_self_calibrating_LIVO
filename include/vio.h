@@ -154,6 +154,7 @@ public:
   bool ncc_en = false, colmap_output_en = false;
   bool dismiss_non_outofbound_pixels_from_ref_patch = false;
   bool en_error_se3_backprop = false;
+  bool en_dynamic_pixel_var = false;
   bool en_pose_linear_interpolate_backprop = false;
 
   int width, height, grid_n_width, grid_n_height, length;
