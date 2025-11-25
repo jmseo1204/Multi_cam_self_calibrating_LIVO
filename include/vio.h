@@ -156,6 +156,7 @@ public:
   bool en_error_se3_backprop = false;
   bool en_dynamic_pixel_var = false;
   bool en_pose_linear_interpolate_backprop = false;
+  bool en_pixelwise_var = false;
 
   int width, height, grid_n_width, grid_n_height, length;
   double image_resize_factor;
@@ -269,6 +270,9 @@ public:
   // After each processMultiCamVIO call, this will contain the per-level
   // average of total row counts over iterations at that level for the frame.
   std::vector<double> level_avg_visual_points;
+  std::vector<int> last_cam_row_counts; // rows per camera (in imgs order)
+  std::vector<Matrix<double, DIM_STATE, 1>>
+      last_cam_solutions; // -K1*H^T*R^-1*z per cam
 };
 typedef std::shared_ptr<VIOManager> VIOManagerPtr;
 

@@ -30,6 +30,7 @@ void VIOManager::readParameters(ros::NodeHandle &nh) {
   nh.param<bool>("vio/en_dynamic_pixel_var", en_dynamic_pixel_var, false);
   nh.param<bool>("vio/en_pose_linear_interpolate_backprop",
                  en_pose_linear_interpolate_backprop, false);
+  nh.param<bool>("common/en_pixelwise_var", en_pixelwise_var, false);
 
   ROS_INFO("VIO Parameters loaded - shiTomasiScore_threshold: %.1f, "
            "min_depth_threshold: %.1f, max_depth_threshold: %.1f",
@@ -707,34 +708,35 @@ void VIOManager::computeJacobianAndUpdateEKF(
         // std::endl;
 
         // R_all의 분위수 계산 및 출력
-        VectorXd R_sorted = R_all;
-        std::sort(R_sorted.data(), R_sorted.data() + R_sorted.size());
-        int n = R_sorted.size();
+        // VectorXd R_sorted = R_all;
+        // std::sort(R_sorted.data(), R_sorted.data() + R_sorted.size());
+        // int n = R_sorted.size();
 
-        double Q0 = R_sorted(0);                   // 최솟값
-        double Q1 = R_sorted(int((n - 1) * 0.25)); // 25% 분위수
-        double Q2 = R_sorted(int((n - 1) * 0.5));  // 50% 분위수 (중앙값)
-        double Q3 = R_sorted(int((n - 1) * 0.75)); // 75% 분위수
-        double Q4 = R_sorted(n - 1);               // 최댓값
+        // double Q0 = R_sorted(0);                   // 최솟값
+        // double Q1 = R_sorted(int((n - 1) * 0.25)); // 25% 분위수
+        // double Q2 = R_sorted(int((n - 1) * 0.5));  // 50% 분위수 (중앙값)
+        // double Q3 = R_sorted(int((n - 1) * 0.75)); // 75% 분위수
+        // double Q4 = R_sorted(n - 1);               // 최댓값
 
         // std::cout << "R_all quantiles - Q0: " << Q0 << ", Q1: " << Q1
         //           << ", Q2: " << Q2 << ", Q3: " << Q3 << ", Q4: " << Q4
         //           << std::endl;
 
         // 현재 state의 rotation과 translation covariance 고유값 출력
-        Eigen::Matrix3d rot_cov = state->cov.block<3, 3>(0, 0);
-        Eigen::Matrix3d trans_cov = state->cov.block<3, 3>(3, 3);
+        // Eigen::Matrix3d rot_cov = state->cov.block<3, 3>(0, 0);
+        // Eigen::Matrix3d trans_cov = state->cov.block<3, 3>(3, 3);
 
-        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es_rot(rot_cov);
-        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es_trans(trans_cov);
+        // Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es_rot(rot_cov);
+        // Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es_trans(trans_cov);
 
-        Eigen::Vector3d rot_eigs = es_rot.eigenvalues();
-        Eigen::Vector3d trans_eigs = es_trans.eigenvalues();
+        // Eigen::Vector3d rot_eigs = es_rot.eigenvalues();
+        // Eigen::Vector3d trans_eigs = es_trans.eigenvalues();
 
-        // 내림차순으로 정렬
-        std::sort(rot_eigs.data(), rot_eigs.data() + 3, std::greater<double>());
-        std::sort(trans_eigs.data(), trans_eigs.data() + 3,
-                  std::greater<double>());
+        // // 내림차순으로 정렬
+        // std::sort(rot_eigs.data(), rot_eigs.data() + 3,
+        // std::greater<double>()); std::sort(trans_eigs.data(),
+        // trans_eigs.data() + 3,
+        //           std::greater<double>());
 
         // std::cout << "Rotation cov eigenvalues (desc): " << rot_eigs(0) << ",
         // "
@@ -753,6 +755,37 @@ void VIOManager::computeJacobianAndUpdateEKF(
         MD(DIM_STATE, DIM_STATE) &&K_1 =
             (H_T_H + (state->cov).inverse()).inverse();
 
+        last_cam_solutions.clear();
+        last_cam_solutions.reserve(H_list.size());
+        for (size_t i = 0; i < H_list.size(); ++i) {
+          const int rows_i = static_cast<int>(H_list[i].rows());
+          if (rows_i <= 0) {
+            last_cam_solutions.emplace_back(MD(DIM_STATE, 1)::Zero());
+            continue;
+          }
+          VectorXd R_inv_z_i(rows_i);
+          for (int r = 0; r < rows_i; ++r) {
+            // R is variance per row; invert to get weight
+            R_inv_z_i(r) = z_list[i](r) / R_list[i](r);
+          }
+          VectorXd htz_i = H_list[i].transpose() * R_inv_z_i; // 7x1
+          // MD(DIM_STATE, 1) sol_i = -K_1.block<DIM_STATE, 7>(0, 0) * htz_i;
+
+          Matrix<double, 7, 7> HtRH_i = Matrix<double, 7, 7>::Zero();
+          for (int r = 0; r < rows_i; ++r) {
+            double w = 1.0 / R_list[i](r);
+            HtRH_i += w * H_list[i].row(r).transpose() * H_list[i].row(r);
+          }
+          // Per-camera K_i: embed 7x7 inverse into DIM_STATE x 7 block (others
+          // zero)
+          Matrix<double, 7, 7> Ki7 =
+              (HtRH_i + (state->cov).inverse().block<7, 7>(0, 0)).inverse();
+          MD(DIM_STATE, 7) K_i = MD(DIM_STATE, 7)::Zero();
+          K_i.block<7, 7>(0, 0) = Ki7;
+          MD(DIM_STATE, 1) sol_i = -K_i * htz_i;
+          last_cam_solutions.push_back(sol_i);
+        }
+
         // R^(-1) * z 계산
         VectorXd R_inv_z(total_rows);
         for (int i = 0; i < total_rows; ++i) {
@@ -761,12 +794,12 @@ void VIOManager::computeJacobianAndUpdateEKF(
           R_inv_z(i) = z_all(i) * inv_R_i;
         }
         auto &&HTz = H_sub_T * R_inv_z;
+        auto vec = (*state_propagat) - (*state);
         G.block<DIM_STATE, 7>(0, 0) =
             K_1.block<DIM_STATE, 7>(0, 0) * H_T_H.block<7, 7>(0, 0);
         MD(DIM_STATE, 1)
-        solution = -K_1.block<DIM_STATE, 7>(0, 0) * HTz; // data term
-        auto vec = (*state_propagat) - (*state);
-        solution += vec - G.block<DIM_STATE, 7>(0, 0) * vec.block<7, 1>(0, 0);
+        solution = -K_1.block<DIM_STATE, 7>(0, 0) * HTz + vec -
+                   G.block<DIM_STATE, 7>(0, 0) * vec.block<7, 1>(0, 0);
         // solution +=
         // K_1 * (*state_propagat).cov.inverse() * vec; // prior
         // regularization
@@ -775,7 +808,7 @@ void VIOManager::computeJacobianAndUpdateEKF(
         // 구성해야하는데, 애초부터 식이 잘못됨. 그리고 IMU 너무 부정확해서
         // prior이 무의미
 
-        std::cout << "state update" << std::endl;
+        // std::cout << "state update" << std::endl;
 
         (*state) += solution;
 
@@ -1287,15 +1320,20 @@ void VIOManager::retrieveFromVisualSparseMap(
             }
           }
 
-          if (valid_count == 0) {
-            pixel_var[k] =
-                1000.0 * min_cov_pixel; // var INF -> impact minimized
-          } else if (valid_count <= 3) {
-            pixel_var[k] = 3.0 * min_cov_pixel;
+          if (en_pixelwise_var) {
+            // 픽셀별 분산 적용
+            if (valid_count == 0) {
+              pixel_var[k] =
+                  1000.0 * min_cov_pixel; // var INF -> impact minimized
+            } else if (valid_count <= 3) {
+              pixel_var[k] = 3.0 * min_cov_pixel;
+            } else {
+              pixel_var[k] =
+                  std::max(weighted_variance / weight_sum * img_point_cov,
+                           min_cov_pixel); // 가중분산 정규화
+            }
           } else {
-            pixel_var[k] =
-                std::max(weighted_variance / weight_sum * img_point_cov,
-                         min_cov_pixel); // 가중분산 정규화
+            pixel_var[k] = img_point_cov; // var INF -> impact minimized
           }
         }
       }
@@ -1358,84 +1396,60 @@ void VIOManager::retrieveFromVisualSparseMap(
 
 void VIOManager::generateVisualMapPoints(cv::Mat img,
                                          multimap<double, pointWithVar> &pg) {
+
   if (pg.size() <= 10)
     return;
 
-  // std::cout << "[ DEBUG ] generateVisualMapPoints" << std::endl;
-
-  cv::Mat gray_img;
-  cv::Mat h_channel, v_channel;
-  cv::Mat h_cos, h_sin;
-  cv::Mat h_grad_x_cos, h_grad_y_cos, h_grad_x_sin, h_grad_y_sin;
-
   if (img.channels() == 3) {
-    cv::cvtColor(img, gray_img, CV_BGR2GRAY);
-
-    cv::Mat hsv_img;
-    cv::cvtColor(img, hsv_img, CV_BGR2HSV);
-
-    std::vector<cv::Mat> hsv_channels;
-    cv::split(hsv_img, hsv_channels);
-    h_channel = hsv_channels[0];
-    v_channel = hsv_channels[2];
-
-    cv::Mat h_angle;
-
-    // std::cout << "[ DEBUG ] generateVisualMapPoints 1" << std::endl;
-    h_channel.convertTo(h_angle, CV_32F,
-                        2.0 * CV_PI / 180.0); // OpenCV H는 0-179 범위
-
-    // std::cout << "[ DEBUG ] generateVisualMapPoints 2" << std::endl;
-    h_cos.create(h_angle.size(), h_angle.type());
-    h_sin.create(h_angle.size(), h_angle.type());
-
-    for (int r = 0; r < h_angle.rows; ++r) {
-      const float *p_angle = h_angle.ptr<float>(r);
-      float *p_cos = h_cos.ptr<float>(r);
-      float *p_sin = h_sin.ptr<float>(r);
-      for (int c = 0; c < h_angle.cols; ++c) {
-        p_cos[c] = std::cos(p_angle[c]);
-        p_sin[c] = std::sin(p_angle[c]);
-      }
-    }
-    // std::cout << "[ DEBUG ] generateVisualMapPoints 3" << std::endl;
-
-    cv::Sobel(h_cos, h_grad_x_cos, CV_32F, 1, 0, 3);
-    cv::Sobel(h_cos, h_grad_y_cos, CV_32F, 0, 1, 3);
-    cv::Sobel(h_sin, h_grad_x_sin, CV_32F, 1, 0, 3);
-    cv::Sobel(h_sin, h_grad_y_sin, CV_32F, 0, 1, 3);
-  } else {
-    gray_img = img.clone();
+    cv::cvtColor(img, img, CV_BGR2GRAY);
   }
-
-  const int PYRAMID_LEVELS = 1;
-  std::vector<cv::Mat> pyramid_images;
-  pyramid_images.push_back(gray_img);
-  for (int i = 1; i < PYRAMID_LEVELS; ++i) {
-    cv::Mat downsampled_img;
-    cv::pyrDown(pyramid_images.back(), downsampled_img);
-    // cv::pyrDown(downsampled_img, downsampled_img);
-    pyramid_images.push_back(downsampled_img);
-  }
-
-  // float hue_threshold = 11;
-  // float shiTomasiScore_threshold = 150.0;  // 이제 멤버 변수로 사용
-  // float min_depth_threshold = 1.5;          // 이제 멤버 변수로 사용
-  // float max_depth_threshold = 10.0;         // 이제 멤버 변수로 사용
-
-  // float weight_hue = 0.5;
-
   // double t0 = omp_get_wtime();
-  for (const auto &pair : pg) {
-    if (pair.second.normal == V3D(0, 0, 0))
+  // for (int i = 0; i < pg.size(); i++) {
+  for (auto pg_it = pg.begin(); pg_it != pg.end(); ++pg_it) {
+    auto pg_i = pg_it->second;
+    if (pg_i.normal == V3D(0, 0, 0))
       continue;
 
-    processVisualPoint(pair.second.point_w, pair.second, pyramid_images);
+    V3D pt = pg_i.point_w;
+    V2D pc(new_frame_->w2c(pt));
+
+    if (new_frame_->cam_->isInFrame(
+            pc.cast<int>(), border)) // 20px is the patch size in the matcher
+    {
+      int index = static_cast<int>(pc[1] / grid_size) * grid_n_width +
+                  static_cast<int>(pc[0] / grid_size);
+
+      if (grid_num[index] != TYPE_MAP) {
+        float cur_value = vk::shiTomasiScore(img, pc[0], pc[1]);
+        // if (cur_value < 5) continue;
+        if (cur_value > scan_value[index]) {
+          scan_value[index] = cur_value;
+          append_voxel_points[index] = pg_i;
+          grid_num[index] = TYPE_POINTCLOUD;
+        }
+      }
+    }
   }
 
   for (int j = 0; j < visual_submap->add_from_voxel_map.size(); j++) {
-    processVisualPoint(visual_submap->add_from_voxel_map[j].point_w,
-                       visual_submap->add_from_voxel_map[j], pyramid_images);
+    V3D pt = visual_submap->add_from_voxel_map[j].point_w;
+    V2D pc(new_frame_->w2c(pt));
+
+    if (new_frame_->cam_->isInFrame(
+            pc.cast<int>(), border)) // 20px is the patch size in the matcher
+    {
+      int index = static_cast<int>(pc[1] / grid_size) * grid_n_width +
+                  static_cast<int>(pc[0] / grid_size);
+
+      if (grid_num[index] != TYPE_MAP) {
+        float cur_value = vk::shiTomasiScore(img, pc[0], pc[1]);
+        if (cur_value > scan_value[index]) {
+          scan_value[index] = cur_value;
+          append_voxel_points[index] = visual_submap->add_from_voxel_map[j];
+          grid_num[index] = TYPE_POINTCLOUD;
+        }
+      }
+    }
   }
 
   // double t_b1 = omp_get_wtime() - t0;
@@ -2276,9 +2290,12 @@ void VIOManager::processMultiCamVIO(
 
     total_points = visual_submap->voxel_points.size();
 
+    std::cout << "[ VIO ] generateVisualMapPoints" << std::endl;
     // 후속 작업들
     generateVisualMapPoints(img_rgbs[cam_idx], pg);
     t4 = (t4 * i + omp_get_wtime()) / (i + 1);
+
+    std::cout << "[ VIO ] projectPatchFromRefToCur" << std::endl;
 
     plotTrackedPoints(cam_idx);
 
@@ -2286,15 +2303,18 @@ void VIOManager::processMultiCamVIO(
       projectPatchFromRefToCur(feat_map);
     t5 = (t5 * i + omp_get_wtime()) / (i + 1);
 
+    std::cout << "[ VIO ] updateVisualMapPoints" << std::endl;
     updateVisualMapPoints(img);
     t6 = (t6 * i + omp_get_wtime()) / (i + 1);
 
+    std::cout << "[ VIO ] updateReferencePatch" << std::endl;
     updateReferencePatch(feat_map);
     t7 = (t7 * i + omp_get_wtime()) / (i + 1);
 
     if (colmap_output_en)
       dumpDataForColmap();
   }
+  std::cout << "[ VIO ] restoreOriginalExtrinsics" << std::endl;
 
   restoreOriginalExtrinsics();
 
@@ -2420,7 +2440,8 @@ void VIOManager::processMultiCamVIO(
 //       for (int x = 0; x < patch_size; x++) {
 //         uint8_t *img_ptr =
 //             (uint8_t *)img.data +
-//             (v_ref_i + x * scale - patch_size_half * scale) * width + u_ref_i
+//             (v_ref_i + x * scale - patch_size_half * scale) * width +
+//             u_ref_i
 //             - patch_size_half * scale;
 //         for (int y = 0; y < patch_size; ++y, img_ptr += scale) {
 //           float du =
@@ -2555,8 +2576,9 @@ void VIOManager::plotTrackedPoints(int cam_idx) {
   // int inlier_count = 0;
   // for (int i = 0; i < img_cp.rows / grid_size; i++)
   // {
-  //   cv::line(img_cp, cv::Poaint2f(0, grid_size * i), cv::Point2f(img_cp.cols,
-  //   grid_size * i), cv::Scalar(255, 255, 255), 1, CV_AA);
+  //   cv::line(img_cp, cv::Poaint2f(0, grid_size * i),
+  //   cv::Point2f(img_cp.cols, grid_size * i), cv::Scalar(255, 255, 255), 1,
+  //   CV_AA);
   // }
   // for (int i = 0; i < img_cp.cols / grid_size; i++)
   // {
@@ -2565,8 +2587,9 @@ void VIOManager::plotTrackedPoints(int cam_idx) {
   // }
   // for (int i = 0; i < img_cp.rows / grid_size; i++)
   // {
-  //   cv::line(img_cp, cv::Point2f(0, grid_size * i), cv::Point2f(img_cp.cols,
-  //   grid_size * i), cv::Scalar(255, 255, 255), 1, CV_AA);
+  //   cv::line(img_cp, cv::Point2f(0, grid_size * i),
+  //   cv::Point2f(img_cp.cols, grid_size * i), cv::Scalar(255, 255, 255), 1,
+  //   CV_AA);
   // }
   // for (int i = 0; i < img_cp.cols / grid_size; i++)
   // {
@@ -2587,8 +2610,8 @@ void VIOManager::plotTrackedPoints(int cam_idx) {
     }
   }
   // std::string text = std::to_string(inlier_count) + " " +
-  // std::to_string(total_points); cv::Point2f origin; origin.x = img_cp.cols -
-  // 110; origin.y = 20; cv::putText(img_cp, text, origin,
+  // std::to_string(total_points); cv::Point2f origin; origin.x = img_cp.cols
+  // - 110; origin.y = 20; cv::putText(img_cp, text, origin,
   // cv::FONT_HERSHEY_COMPLEX, 0.7, cv::Scalar(0, 255, 0), 2, 8, 0);
 }
 
@@ -2717,18 +2740,21 @@ void VIOManager::dumpDataForColmap() {
 //   t5);
 //   // printf("\033[1;32m[ VIO time ]: current frame: updateReferencePatch
 //   time:
-//   // %.6lf secs.\033[0m\n", t7 - t6); printf("\033[1;32m[ VIO time ]: current
-//   // total time: %.6lf, average total time: %.6lf secs.\033[0m\n", t7 - t1 -
-//   (t5
+//   // %.6lf secs.\033[0m\n", t7 - t6); printf("\033[1;32m[ VIO time ]:
+//   current
+//   // total time: %.6lf, average total time: %.6lf secs.\033[0m\n", t7 - t1
+//   - (t5
 //   // - t4), ave_total);
 
-//   // ave_build_residual_time = ave_build_residual_time * (frame_count - 1) /
+//   // ave_build_residual_time = ave_build_residual_time * (frame_count - 1)
+//   /
 //   // frame_count + (t2 - t1) / frame_count; ave_ekf_time = ave_ekf_time *
 //   // (frame_count - 1) / frame_count + (t3 - t2) / frame_count;
 
 //   // cout << BLUE << "ave_build_residual_time: " << ave_build_residual_time
 //   <<
-//   // RESET << endl; cout << BLUE << "ave_ekf_time: " << ave_ekf_time << RESET
+//   // RESET << endl; cout << BLUE << "ave_ekf_time: " << ave_ekf_time <<
+//   RESET
 //   <<
 //   // endl;
 
@@ -2756,7 +2782,8 @@ void VIOManager::dumpDataForColmap() {
 //          compute_jacobian_time);
 //   printf("\033[1;32m| %-27s   | %-27lf |\033[0m\n", "-> updateEKF",
 //          update_ekf_time);
-//   printf("\033[1;32m| %-29s | %-27lf |\033[0m\n", "generateVisualMapPoints",
+//   printf("\033[1;32m| %-29s | %-27lf |\033[0m\n",
+//   "generateVisualMapPoints",
 //          t4 - t3);
 //   printf("\033[1;32m| %-29s | %-27lf |\033[0m\n", "updateVisualMapPoints",
 //          t6 - t5);

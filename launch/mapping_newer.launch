@@ -16,14 +16,14 @@
 		  args="compressed in:=/alphasense_driver_ros/cam4 raw out:=/alphasense_driver_ros/cam4" />
 
 	<node pkg="fast_livo" type="fastlivo_mapping" name="laserMapping" output="screen">
-		<rosparam file="$(find fast_livo)/config/camera_newer_1.yaml" />
-		<rosparam file="$(find fast_livo)/config/camera_newer_2.yaml" />
-		<rosparam file="$(find fast_livo)/config/camera_newer_3.yaml" />
-		<rosparam file="$(find fast_livo)/config/camera_newer_4.yaml" />
+		<rosparam file="$(find fast_livo)/config/camera_newer_1.yaml" ns="cam_1"/>
+		<rosparam file="$(find fast_livo)/config/camera_newer_2.yaml" ns="cam_2"/>
+		<rosparam file="$(find fast_livo)/config/camera_newer_3.yaml" ns="cam_3"/>
+		<rosparam file="$(find fast_livo)/config/camera_newer_4.yaml" ns="cam_4"/>
 	</node>
 	
 	<group if="$(arg rviz)">
 		<node launch-prefix="nice" pkg="rviz" type="rviz" name="rviz" args="-d $(find fast_livo)/rviz_cfg/newer.rviz" />
 	</group>
 
-</launch> 	
+</launch>

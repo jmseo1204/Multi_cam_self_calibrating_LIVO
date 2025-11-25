@@ -5,11 +5,11 @@ common:
   img_topics: 
     - "/alphasense_driver_ros/cam0" 
     - "/alphasense_driver_ros/cam1" 
-    - "/alphasense_driver_ros/cam3" 
-    - "/alphasense_driver_ros/cam4" 
+    # - "/alphasense_driver_ros/cam3" 
+    # - "/alphasense_driver_ros/cam4" 
   lid_topic: "/os_cloud_node/points"
   imu_topic: "/alphasense_driver_ros/imu"
-  num_of_cam: 4 # 카메라 개수 명시
+  num_of_cam: 2 # 카메라 개수 명시
   img_en: 1
   lidar_en: 1
   ros_driver_bug_fix: false

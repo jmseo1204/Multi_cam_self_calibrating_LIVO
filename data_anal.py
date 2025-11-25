@@ -8,7 +8,7 @@ import io
 import os
 
 # 1. 입력 파일에서 데이터 로드
-file_path = os.path.join(os.path.dirname(__file__), "results", "3841_stat.txt")
+file_path = os.path.join(os.path.dirname(__file__), "results", "1120_1440_stat.txt")
 if not os.path.exists(file_path):
     raise FileNotFoundError(f"Input file not found: {file_path}")
 

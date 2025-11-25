@@ -15,5 +15,6 @@ git ls-files -z | rsync -av --files-from=- --from0 ./ "$DEST/"
 # 빌드
 cd ~/catkin_ws
 catkin_make -DCMAKE_BUILD_TYPE=Release
+source devel/setup.bash
 
 cd "$OLD_DIR"

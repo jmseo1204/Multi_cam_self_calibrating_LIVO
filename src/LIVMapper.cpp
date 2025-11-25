@@ -1,3 +1,5 @@
+// Check if feats_down_body->points' curvature is sorted
+
 /*
 This file is part of FAST-LIVO2: Fast, Direct LiDAR-Inertial-Visual Odometry.
 
@@ -413,7 +415,9 @@ void LIVMapper::handleVIO() {
   Eigen::Matrix3d rot_cov_post = _state.cov.block<3, 3>(0, 0);
   Eigen::Matrix3d trans_cov_post = _state.cov.block<3, 3>(3, 3);
   writeVIOStats(LidarMeasures.last_lio_update_time, rot_cov_pre, trans_cov_pre,
-                rot_cov_post, trans_cov_post, num_of_cam, m.img_camera_indices);
+                rot_cov_post, trans_cov_post, num_of_cam, m.img_camera_indices,
+                vio_manager->last_cam_row_counts,
+                vio_manager->last_cam_solutions);
 
   // if (mapping_after_vio) {
   //   PointCloudXYZI::Ptr world_lidar(new PointCloudXYZI());
@@ -523,18 +527,19 @@ void LIVMapper::handleVIO() {
            << feats_undistort->points.size() << std::endl;
 }
 
-void LIVMapper::writeVIOStats(double cur_time,
-                              const Eigen::Matrix3d &rot_cov_pre,
-                              const Eigen::Matrix3d &trans_cov_pre,
-                              const Eigen::Matrix3d &rot_cov_post,
-                              const Eigen::Matrix3d &trans_cov_post,
-                              int total_cam_count,
-                              const std::vector<int> &used_cam_indices) {
+void LIVMapper::writeVIOStats(
+    double cur_time, const Eigen::Matrix3d &rot_cov_pre,
+    const Eigen::Matrix3d &trans_cov_pre, const Eigen::Matrix3d &rot_cov_post,
+    const Eigen::Matrix3d &trans_cov_post, int total_cam_count,
+    const std::vector<int> &used_cam_indices,
+    const std::vector<int> &cam_row_counts,
+    const std::vector<Matrix<double, DIM_STATE, 1>> &cam_solutions) {
   // Prepare VIO stats file (open once and write header)
   if (!fout_vio_stats.is_open()) {
     std::string path =
         vio_stats_path.empty()
-            ? std::string("/mnt/c/Users/USER/Desktop/fast_livo2/results/") +
+            ? std::string(
+                  "/mnt/c/Users/USER/Desktop/sliding_fast_livo2/results/") +
                   "vio_stats.txt"
             : vio_stats_path;
     fout_vio_stats.open(path, std::ios::out | std::ios::app);
@@ -542,39 +547,33 @@ void LIVMapper::writeVIOStats(double cur_time,
 
   // Header: write once (columns description)
   if (!vio_stats_header_written) {
-    fout_vio_stats << "# time(s), pre_rot_eig1, pre_rot_eig2, pre_rot_eig3, "
-                   << "pre_trans_eig1, pre_trans_eig2, pre_trans_eig3, "
-                   << "post_rot_eig1, post_rot_eig2, post_rot_eig3, "
-                   << "post_trans_eig1, post_trans_eig2, post_trans_eig3";
+    fout_vio_stats << "# time(s)";
     // Camera usage columns cam_used[0..N-1]
     for (int cam = 0; cam < total_cam_count; ++cam) {
       fout_vio_stats << ", cam_used[" << cam << "]";
     }
+    // Per camera row counts
+    for (int cam = 0; cam < total_cam_count; ++cam) {
+      fout_vio_stats << ", cam_rows[" << cam << "]";
+    }
+    // Per camera solution (first 7 dims: mapped part)
+    for (int cam = 0; cam < total_cam_count; ++cam) {
+      for (int d = 0; d < 7; ++d) {
+        fout_vio_stats << ", cam_sol[" << cam << "][" << d << "]";
+      }
+    }
     // Only level 0 average total rows
     fout_vio_stats << ", level0_avg_total_rows";
+    // Post-update covariance max eigenvalues (rot, trans)
+    fout_vio_stats << ", rot_max_eig_post, trans_max_eig_post";
+    // Median patch count across cams for this update
+    fout_vio_stats << ", median_patch_count";
     fout_vio_stats << std::endl;
     vio_stats_header_written = true;
   }
 
-  // Compute eigenvalues
-  Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es_rot_pre(rot_cov_pre);
-  Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es_trans_pre(trans_cov_pre);
-  Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es_rot_post(rot_cov_post);
-  Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es_trans_post(trans_cov_post);
-
-  Eigen::Vector3d rot_eigs_pre = es_rot_pre.eigenvalues();
-  Eigen::Vector3d trans_eigs_pre = es_trans_pre.eigenvalues();
-  Eigen::Vector3d rot_eigs_post = es_rot_post.eigenvalues();
-  Eigen::Vector3d trans_eigs_post = es_trans_post.eigenvalues();
-
-  // Data row
-  fout_vio_stats << std::setprecision(9) << std::fixed << cur_time << ", "
-                 << rot_eigs_pre(0) << ", " << rot_eigs_pre(1) << ", "
-                 << rot_eigs_pre(2) << ", " << trans_eigs_pre(0) << ", "
-                 << trans_eigs_pre(1) << ", " << trans_eigs_pre(2) << ", "
-                 << rot_eigs_post(0) << ", " << rot_eigs_post(1) << ", "
-                 << rot_eigs_post(2) << ", " << trans_eigs_post(0) << ", "
-                 << trans_eigs_post(1) << ", " << trans_eigs_post(2);
+  // Data row (start with time only)
+  fout_vio_stats << std::setprecision(9) << std::fixed << cur_time;
 
   // Camera usage flags
   std::vector<int> cam_flags(static_cast<size_t>(total_cam_count), 0);
@@ -586,14 +585,93 @@ void LIVMapper::writeVIOStats(double cur_time,
     fout_vio_stats << ", " << cam_flags[static_cast<size_t>(cam)];
   }
 
-  // Append only level 0 average (convert rows to point count by dividing by
-  // patch_size_total)
-  double avg_level0_points = 0.0;
-  if (!vio_manager->level_avg_visual_points.empty()) {
-    avg_level0_points = vio_manager->level_avg_visual_points[0];
+  // Camera row counts (pad/truncate to total_cam_count)
+  for (int cam = 0; cam < total_cam_count; ++cam) {
+    int pos = -1;
+    for (size_t k = 0; k < used_cam_indices.size(); ++k) {
+      if (used_cam_indices[k] == cam) {
+        pos = static_cast<int>(k);
+        break;
+      }
+    }
+    int rows = (pos >= 0 && pos < (int)cam_row_counts.size())
+                   ? cam_row_counts[pos]
+                   : 0;
+    fout_vio_stats << ", " << rows;
   }
-  fout_vio_stats << ", " << avg_level0_points;
-  fout_vio_stats << std::endl;
+
+  // Camera solutions (first 7 dims to match mapped part)
+  for (int cam = 0; cam < total_cam_count; ++cam) {
+    int pos = -1;
+    for (size_t k = 0; k < used_cam_indices.size(); ++k) {
+      if (used_cam_indices[k] == cam) {
+        pos = static_cast<int>(k);
+        break;
+      }
+    }
+    if (pos >= 0 && pos < (int)cam_solutions.size()) {
+      const auto &sol = cam_solutions[pos];
+      int rows = (pos < (int)cam_row_counts.size()) ? cam_row_counts[pos] : 0;
+      // double denom = rows > 0 ? static_cast<double>(rows) : 1.0;
+      for (int d = 0; d < 7; ++d) {
+        fout_vio_stats << ", " << (sol(d, 0));
+      }
+    } else {
+      for (int d = 0; d < 7; ++d) {
+        fout_vio_stats << ", " << 0.0;
+      }
+    }
+  }
+
+  // Only level 0 average total rows (if available)
+  double level0_avg = 0.0;
+  if (!vio_manager->level_avg_visual_points.empty()) {
+    level0_avg = vio_manager->level_avg_visual_points[0];
+  }
+  fout_vio_stats << ", " << level0_avg;
+
+  // Append post-update max eigenvalues for rotation and translation covariances
+  Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es_rot_post(rot_cov_post);
+  Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> es_trans_post(trans_cov_post);
+  Eigen::Vector3d rot_eigs_post = es_rot_post.eigenvalues();
+  Eigen::Vector3d trans_eigs_post = es_trans_post.eigenvalues();
+  double rot_max_post =
+      std::max(rot_eigs_post(0), std::max(rot_eigs_post(1), rot_eigs_post(2)));
+  double trans_max_post = std::max(
+      trans_eigs_post(0), std::max(trans_eigs_post(1), trans_eigs_post(2)));
+  fout_vio_stats << ", " << rot_max_post << ", " << trans_max_post;
+
+  // Compute and append median patch count across used cameras
+  std::vector<double> patch_counts;
+  patch_counts.reserve(used_cam_indices.size());
+  for (int cam = 0; cam < total_cam_count; ++cam) {
+    int pos = -1;
+    for (size_t k = 0; k < used_cam_indices.size(); ++k) {
+      if (used_cam_indices[k] == cam) {
+        pos = static_cast<int>(k);
+        break;
+      }
+    }
+    if (pos >= 0 && pos < (int)cam_row_counts.size() && vio_manager) {
+      double rows = static_cast<double>(cam_row_counts[pos]);
+      double patches =
+          vio_manager->patch_size_total > 0
+              ? rows / static_cast<double>(vio_manager->patch_size_total)
+              : 0.0;
+      patch_counts.push_back(patches);
+    }
+  }
+  double median_patch = 0.0;
+  if (!patch_counts.empty()) {
+    std::sort(patch_counts.begin(), patch_counts.end());
+    size_t mid = patch_counts.size() / 2;
+    if (patch_counts.size() % 2 == 0) {
+      median_patch = 0.5 * (patch_counts[mid - 1] + patch_counts[mid]);
+    } else {
+      median_patch = patch_counts[mid];
+    }
+  }
+  fout_vio_stats << ", " << median_patch << std::endl;
 }
 
 void LIVMapper::handleLIO() {
@@ -677,8 +755,39 @@ void LIVMapper::handleLIO() {
 
     *feats_down_body_prev = *feats_down_body_prev + *feats_down_body;
 
+    // [DEBUG] Verify that curvature values are sorted
+    // for (size_t i = 1; i < feats_down_body->points.size(); ++i) {
+    //   assert(feats_down_body->points[i - 1].curvature <=
+    //          feats_down_body->points[i].curvature);
+    // }
+
+    // if (feats_down_body && feats_down_body_prev &&
+    //     feats_down_body->points.size() > 0) {
+    //   double ratio = feats_down_body->points.size() /
+    //                  static_cast<double>(feats_down_body_prev->points.size());
+    //   std::cout << "[DEBUG] feats_down_body_prev size: "
+    //             << feats_down_body_prev->points.size()
+    //             << ", feats_down_body size: " <<
+    //             feats_down_body->points.size()
+    //             << ", ratio: " << ratio << ", curvature range: "
+    //             << feats_down_body_prev->points.rbegin()->curvature -
+    //                    feats_down_body_prev->points.begin()->curvature
+    //             << std::endl;
+    // } else {
+    //   std::cout << "[DEBUG] feats_down_body_prev or feats_down_body is null
+    //   or "
+    //                "feats_down_body size is 0."
+    //             << std::endl;
+    // }
+
   } else {
     *feats_down_body_prev = *feats_down_body;
+
+    // std::cout << "[DEBUG] feats_down_body size: "
+    //           << feats_down_body->points.size() << ", curvature range: "
+    //           << feats_down_body_prev->points.rbegin()->curvature -
+    //                  feats_down_body_prev->points.begin()->curvature
+    //           << std::endl;
   }
 
   // std::cout << "handleLIO1" << std::endl;
@@ -974,20 +1083,19 @@ void LIVMapper::savePCD() {
 }
 
 void LIVMapper::run() {
-  // 초기에 TUM trajectory 파일 경로 생성
-  // std::string tum_output_path = std::string(ROOT_DIR) + "/Log/" +
-  //                               std::to_string(ros::Time::now().toSec()) +
-  //                               "_tum.txt";
+  time_t now = time(nullptr);
+  struct tm *lt = localtime(&now);
+  char datebuf[16];
+  int sec4 = int(now % 10000);
+  snprintf(datebuf, sizeof(datebuf), "%02d%02d_%04d", lt->tm_mon + 1,
+           lt->tm_mday, sec4);
+
   std::string tum_output_path =
       "/mnt/c/Users/USER/Desktop/sliding_fast_livo2/results/" +
-      std::to_string(int(ros::Time::now().toSec()) % 10000) + ".txt";
+      std::string(datebuf) + ".txt";
 
-  std::string stat_output_path =
-      "/mnt/c/Users/USER/Desktop/sliding_fast_livo2/results/" +
-      std::to_string(int(ros::Time::now().toSec()) % 10000) + "_stat.txt";
-
-  // set the VIO stats output path for writeVIOStats
-  vio_stats_path = stat_output_path;
+  vio_stats_path = "/mnt/c/Users/USER/Desktop/sliding_fast_livo2/results/" +
+                   std::string(datebuf) + "_stat.txt";
 
   ros::Rate rate(5000);
   while (ros::ok()) {

@@ -13,11 +13,11 @@ common:
   img_en: 1
   lidar_en: 1
   ros_driver_bug_fix: false
-  sync_time_window: 0.01
+  sync_time_window: 0.03 # 0.03
   minimum_simultaneous_frame_num: 1
   lidar_window_size: 0.1
-  en_sliding_window_ICP: false
-  en_cam_backprop: true
+  en_sliding_window_ICP: true
+  en_cam_backprop: false # en_error_se3_backprop 온오프
   mapping_after_vio: false
 
 extrin_calib:
@@ -83,7 +83,7 @@ preprocess:
 vio:
   max_iterations: 5
   outlier_threshold: 500
-  img_point_cov: 1000
+  img_point_cov: 30000
   patch_size: 8
   patch_pyrimid_level: 4
   normal_en: true
@@ -101,6 +101,7 @@ vio:
   en_error_se3_backprop: true
   en_pose_linear_interpolate_backprop: false
   en_dynamic_pixel_var: false
+  en_pixelwise_var: false
 
 imu:
   imu_en: true

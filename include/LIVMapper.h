@@ -47,11 +47,15 @@ public:
   void handleLIO();
   void savePCD();
   bool processImu();
-  void writeVIOStats(double cur_time, const Eigen::Matrix3d &rot_cov_pre,
-                     const Eigen::Matrix3d &trans_cov_pre,
-                     const Eigen::Matrix3d &rot_cov_post,
-                     const Eigen::Matrix3d &trans_cov_post, int total_cam_count,
-                     const std::vector<int> &used_cam_indices);
+
+  void
+  writeVIOStats(double cur_time, const Eigen::Matrix3d &rot_cov_pre,
+                const Eigen::Matrix3d &trans_cov_pre,
+                const Eigen::Matrix3d &rot_cov_post,
+                const Eigen::Matrix3d &trans_cov_post, int total_cam_count,
+                const std::vector<int> &used_cam_indices,
+                const std::vector<int> &cam_row_counts,
+                const std::vector<Matrix<double, DIM_STATE, 1>> &cam_solutions);
 
   bool sync_packages(LidarMeasureGroup &meas);
   void prop_imu_once(StatesGroup &imu_prop_state, const double dt, V3D acc_avr,
@@ -98,6 +102,7 @@ public:
   bool show_imu_path = false;
   bool only_side_cam = false;
   bool en_sliding_window_ICP = false;
+
   double prev_lio_update_time = 0.0;
 
   SLAM_MODE slam_mode_;
