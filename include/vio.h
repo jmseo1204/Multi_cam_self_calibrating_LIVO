@@ -273,6 +273,10 @@ public:
   std::vector<int> last_cam_row_counts; // rows per camera (in imgs order)
   std::vector<Matrix<double, DIM_STATE, 1>>
       last_cam_solutions; // -K1*H^T*R^-1*z per cam
+  std::vector<double> last_cam_rot_std;
+  std::vector<double> last_cam_trans_std;
+  double last_total_rot_std = 0.0;
+  double last_total_trans_std = 0.0;
 };
 typedef std::shared_ptr<VIOManager> VIOManagerPtr;
 

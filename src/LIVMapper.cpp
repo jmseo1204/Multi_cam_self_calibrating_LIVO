@@ -417,7 +417,10 @@ void LIVMapper::handleVIO() {
   writeVIOStats(LidarMeasures.last_lio_update_time, rot_cov_pre, trans_cov_pre,
                 rot_cov_post, trans_cov_post, num_of_cam, m.img_camera_indices,
                 vio_manager->last_cam_row_counts,
-                vio_manager->last_cam_solutions);
+                vio_manager->last_cam_solutions, vio_manager->last_cam_rot_std,
+                vio_manager->last_cam_trans_std,
+                vio_manager->last_total_rot_std,
+                vio_manager->last_total_trans_std);
 
   // if (mapping_after_vio) {
   //   PointCloudXYZI::Ptr world_lidar(new PointCloudXYZI());
@@ -533,7 +536,10 @@ void LIVMapper::writeVIOStats(
     const Eigen::Matrix3d &trans_cov_post, int total_cam_count,
     const std::vector<int> &used_cam_indices,
     const std::vector<int> &cam_row_counts,
-    const std::vector<Matrix<double, DIM_STATE, 1>> &cam_solutions) {
+    const std::vector<Matrix<double, DIM_STATE, 1>> &cam_solutions,
+    const std::vector<double> &cam_rot_std,
+    const std::vector<double> &cam_trans_std, double total_rot_std,
+    double total_trans_std) {
   // Prepare VIO stats file (open once and write header)
   if (!fout_vio_stats.is_open()) {
     std::string path =
@@ -562,12 +568,21 @@ void LIVMapper::writeVIOStats(
         fout_vio_stats << ", cam_sol[" << cam << "][" << d << "]";
       }
     }
+    // Per camera update std devs
+    for (int cam = 0; cam < total_cam_count; ++cam) {
+      fout_vio_stats << ", cam_rot_std[" << cam << "]";
+      fout_vio_stats << ", cam_trans_std[" << cam << "]";
+    }
+    // Total update std devs
+    fout_vio_stats << ", total_rot_std, total_trans_std";
     // Only level 0 average total rows
     fout_vio_stats << ", level0_avg_total_rows";
     // Post-update covariance max eigenvalues (rot, trans)
     fout_vio_stats << ", rot_max_eig_post, trans_max_eig_post";
-    // Median patch count across cams for this update
-    fout_vio_stats << ", median_patch_count";
+    // Per-camera patch count
+    for (int cam = 0; cam < total_cam_count; ++cam) {
+      fout_vio_stats << ", cam_patch_count[" << cam << "]";
+    }
     fout_vio_stats << std::endl;
     vio_stats_header_written = true;
   }
@@ -623,6 +638,26 @@ void LIVMapper::writeVIOStats(
     }
   }
 
+  // Camera update std devs
+  for (int cam = 0; cam < total_cam_count; ++cam) {
+    int pos = -1;
+    for (size_t k = 0; k < used_cam_indices.size(); ++k) {
+      if (used_cam_indices[k] == cam) {
+        pos = static_cast<int>(k);
+        break;
+      }
+    }
+    if (pos >= 0 && pos < (int)cam_rot_std.size()) {
+      fout_vio_stats << ", " << cam_rot_std[pos];
+      fout_vio_stats << ", " << cam_trans_std[pos];
+    } else {
+      fout_vio_stats << ", 0.0, 0.0";
+    }
+  }
+
+  // Total update std devs
+  fout_vio_stats << ", " << total_rot_std << ", " << total_trans_std;
+
   // Only level 0 average total rows (if available)
   double level0_avg = 0.0;
   if (!vio_manager->level_avg_visual_points.empty()) {
@@ -641,9 +676,8 @@ void LIVMapper::writeVIOStats(
       trans_eigs_post(0), std::max(trans_eigs_post(1), trans_eigs_post(2)));
   fout_vio_stats << ", " << rot_max_post << ", " << trans_max_post;
 
-  // Compute and append median patch count across used cameras
-  std::vector<double> patch_counts;
-  patch_counts.reserve(used_cam_indices.size());
+  // Compute and append patch count across used cameras
+  std::vector<double> patch_counts(static_cast<size_t>(total_cam_count), 0.0);
   for (int cam = 0; cam < total_cam_count; ++cam) {
     int pos = -1;
     for (size_t k = 0; k < used_cam_indices.size(); ++k) {
@@ -658,20 +692,14 @@ void LIVMapper::writeVIOStats(
           vio_manager->patch_size_total > 0
               ? rows / static_cast<double>(vio_manager->patch_size_total)
               : 0.0;
-      patch_counts.push_back(patches);
+      patch_counts[static_cast<size_t>(cam)] = patches;
     }
   }
-  double median_patch = 0.0;
-  if (!patch_counts.empty()) {
-    std::sort(patch_counts.begin(), patch_counts.end());
-    size_t mid = patch_counts.size() / 2;
-    if (patch_counts.size() % 2 == 0) {
-      median_patch = 0.5 * (patch_counts[mid - 1] + patch_counts[mid]);
-    } else {
-      median_patch = patch_counts[mid];
-    }
+
+  for (int cam = 0; cam < total_cam_count; ++cam) {
+    fout_vio_stats << ", " << patch_counts[static_cast<size_t>(cam)];
   }
-  fout_vio_stats << ", " << median_patch << std::endl;
+  fout_vio_stats << std::endl;
 }
 
 void LIVMapper::handleLIO() {

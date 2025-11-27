@@ -8,7 +8,7 @@ import io
 import os
 
 # 1. 입력 파일에서 데이터 로드
-file_path = os.path.join(os.path.dirname(__file__), "results", "1120_1440_stat.txt")
+file_path = os.path.join(os.path.dirname(__file__), "results", "1125_7534_stat.txt")
 if not os.path.exists(file_path):
     raise FileNotFoundError(f"Input file not found: {file_path}")
 
@@ -30,8 +30,14 @@ columns += [f"cam_used_{i}" for i in range(4)]
 columns += [f"cam_rows_{i}" for i in range(4)]
 for i in range(4):
     columns += [f"cam_sol_{i}_{j}" for j in range(7)]
+for i in range(4):
+    columns.append(f"cam_rot_std_{i}")
+    columns.append(f"cam_trans_std_{i}")
+columns += ["total_rot_std", "total_trans_std"]
 columns.append("level0_avg_total_rows")
-columns += ["rot_max_eig_post", "trans_max_eig_post", "median_patch_count"]
+columns += ["rot_max_eig_post", "trans_max_eig_post"]
+for i in range(4):
+    columns.append(f"cam_patch_count_{i}")
 
 # 파일 내 컬럼 수와 맞추기 위해 초과 컬럼명은 자르고, 부족하면 남기는 대로 둡니다.
 if len(columns) >= df.shape[1]:
@@ -129,11 +135,12 @@ def create_similarity_grid(results_df, title):
 rotation_grid = create_similarity_grid(rotation_df, "Rotation")
 translation_grid = create_similarity_grid(translation_df, "Translation")
 
-# 7. 시각화
+# 7. 시각화 (Figure 1: Similarity & Distributions)
 plt.style.use("seaborn-v0_8-whitegrid")
 
 # Create figure with subplots
 fig = plt.figure(figsize=(16, 12))
+fig.suptitle("Figure 1: Cosine Similarity Analysis", fontsize=16)
 
 # 7-1. Rotation similarity grid
 ax1 = plt.subplot(2, 3, 1)
@@ -190,62 +197,96 @@ if not rotation_df.empty:
     rot_plot = rotation_df.copy()
     rot_plot = rot_plot.merge(df[["time", "time_shift"]], on="time", how="left")
     sns.scatterplot(data=rot_plot, x="time_shift", y="similarity", hue="pair", style="pair", s=100, ax=ax5)
-    ax5.set_title("Rotation Similarity over log(t - t0 + 1) with Cov Max Eigs")
+    ax5.set_title("Rotation Similarity over log(t - t0 + 1)")
     ax5.set_xlabel("log(t - t0 + 1)")
     ax5.set_ylabel("Cosine similarity")
     ax5.set_ylim(-1.1, 1.1)
-
-    # Overlay rot max eigenvalues line using transformed time on first twin axis
-    ax5b = None
-    if "rot_max_eig_post" in df.columns:
-        ax5b = ax5.twinx()
-        ax5b.plot(df["time_shift"], df["rot_max_eig_post"], color="tab:orange", label="rot_max_eig")
-        ax5b.set_ylabel("Cov max eigenvalue")
-        ax5b.legend(loc="lower right")
-
-    # Overlay median patch count on a second twin axis with outward offset
-    if "median_patch_count" in df.columns:
-        ax5c = ax5.twinx()
-        ax5c.spines["right"].set_position(("outward", 60))
-        ax5c.plot(df["time_shift"], df["median_patch_count"], color="tab:purple", label="median_patch")
-        ax5c.set_ylabel("Median patch count")
-        ax5c.legend(loc="upper right")
-
     ax5.legend(title="Vector pair", bbox_to_anchor=(1.02, 1), loc="upper left")
 
-# 7-6. Translation similarity over time + overlay cov eigenvalues
+# 7-6. Translation similarity over time
 ax6 = plt.subplot(2, 3, 6)
 if not translation_df.empty:
     trans_plot = translation_df.copy()
     trans_plot = trans_plot.merge(df[["time", "time_shift"]], on="time", how="left")
     sns.scatterplot(data=trans_plot, x="time_shift", y="similarity", hue="pair", style="pair", s=100, ax=ax6)
-    ax6.set_title("Translation Similarity over log(t - t0 + 1) with Cov Max Eigs")
+    ax6.set_title("Translation Similarity over log(t - t0 + 1)")
     ax6.set_xlabel("log(t - t0 + 1)")
     ax6.set_ylabel("Cosine similarity")
     ax6.set_ylim(-1.1, 1.1)
-
-    # Overlay trans max eigenvalues on first twin axis
-    ax6b = None
-    if "trans_max_eig_post" in df.columns:
-        ax6b = ax6.twinx()
-        ax6b.plot(df["time_shift"], df["trans_max_eig_post"], color="tab:green", label="trans_max_eig")
-        ax6b.set_ylabel("Cov max eigenvalue")
-        ax6b.legend(loc="lower right")
-
-    # Overlay median patch count on a second twin axis with outward offset
-    if "median_patch_count" in df.columns:
-        ax6c = ax6.twinx()
-        ax6c.spines["right"].set_position(("outward", 60))
-        ax6c.plot(df["time_shift"], df["median_patch_count"], color="tab:purple", label="median_patch")
-        ax6c.set_ylabel("Median patch count")
-        ax6c.legend(loc="upper right")
-
     ax6.legend(title="Vector pair", bbox_to_anchor=(1.02, 1), loc="upper left")
 
 plt.tight_layout()
 plt.show()
 
-# 8. Print summary statistics
+# 8. Figure 2: Update Standard Deviations & Eigenvalues & Patch Counts
+fig2 = plt.figure(figsize=(16, 12))
+fig2.suptitle("Figure 2: Update Standard Deviations, Covariance Eigenvalues & Patch Counts", fontsize=16)
+
+# 8-1. Rotation Update Std Dev & Max Eigenvalue
+ax_rot = plt.subplot(3, 1, 1)
+# Plot per-camera std devs
+for i in range(4):
+    col_name = f"cam_rot_std_{i}"
+    if col_name in df.columns:
+        ax_rot.plot(df["time_shift"], df[col_name], label=f"Cam {i} Std", alpha=0.6, linewidth=1)
+
+# Plot total std dev
+if "total_rot_std" in df.columns:
+    ax_rot.plot(df["time_shift"], df["total_rot_std"], label="Total Std", color="black", linewidth=2, linestyle="--")
+
+ax_rot.set_xlabel("log(t - t0 + 1)")
+ax_rot.set_ylabel("Update Std Dev (Rotation)")
+ax_rot.set_title("Rotation Update Std Dev & Max Eigenvalue")
+ax_rot.legend(loc="upper left")
+
+# Overlay Max Eigenvalue on twin axis
+if "rot_max_eig_post" in df.columns:
+    ax_rot2 = ax_rot.twinx()
+    ax_rot2.plot(df["time_shift"], df["rot_max_eig_post"], color="red", label="Max Eig Post", linewidth=2, alpha=0.8)
+    ax_rot2.set_ylabel("Max Eigenvalue (Rotation)")
+    ax_rot2.legend(loc="upper right")
+
+# 8-2. Translation Update Std Dev & Max Eigenvalue
+ax_trans = plt.subplot(3, 1, 2)
+# Plot per-camera std devs
+for i in range(4):
+    col_name = f"cam_trans_std_{i}"
+    if col_name in df.columns:
+        ax_trans.plot(df["time_shift"], df[col_name], label=f"Cam {i} Std", alpha=0.6, linewidth=1)
+
+# Plot total std dev
+if "total_trans_std" in df.columns:
+    ax_trans.plot(df["time_shift"], df["total_trans_std"], label="Total Std", color="black", linewidth=2, linestyle="--")
+
+ax_trans.set_xlabel("log(t - t0 + 1)")
+ax_trans.set_ylabel("Update Std Dev (Translation)")
+ax_trans.set_title("Translation Update Std Dev & Max Eigenvalue")
+ax_trans.legend(loc="upper left")
+
+# Overlay Max Eigenvalue on twin axis
+if "trans_max_eig_post" in df.columns:
+    ax_trans2 = ax_trans.twinx()
+    ax_trans2.plot(df["time_shift"], df["trans_max_eig_post"], color="red", label="Max Eig Post", linewidth=2, alpha=0.8)
+    ax_trans2.set_ylabel("Max Eigenvalue (Translation)")
+    ax_trans2.legend(loc="upper right")
+
+# 8-3. Per-Camera Patch Counts
+ax_patch = plt.subplot(3, 1, 3)
+for i in range(4):
+    col_name = f"cam_patch_count_{i}"
+    if col_name in df.columns:
+        ax_patch.plot(df["time_shift"], df[col_name], label=f"Cam {i} Patch Count", alpha=0.7, linewidth=1.5)
+
+ax_patch.set_xlabel("log(t - t0 + 1)")
+ax_patch.set_ylabel("Patch Count")
+ax_patch.set_title("Patch Count over Time")
+ax_patch.legend(loc="upper right")
+ax_patch.grid(True)
+
+plt.tight_layout()
+plt.show()
+
+# 9. Print summary statistics
 if not rotation_df.empty and not translation_df.empty:
     print("--- Analysis Results ---")
     print("\nRotation Similarity Statistics:")

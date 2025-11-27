@@ -17,7 +17,7 @@ common:
   minimum_simultaneous_frame_num: 1
   lidar_window_size: 0.1
   en_sliding_window_ICP: true
-  en_cam_backprop: false # en_error_se3_backprop 온오프
+  en_cam_backprop: true # en_error_se3_backprop 온오프
   mapping_after_vio: false
 
 extrin_calib:

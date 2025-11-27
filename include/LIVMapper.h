@@ -55,7 +55,10 @@ public:
                 const Eigen::Matrix3d &trans_cov_post, int total_cam_count,
                 const std::vector<int> &used_cam_indices,
                 const std::vector<int> &cam_row_counts,
-                const std::vector<Matrix<double, DIM_STATE, 1>> &cam_solutions);
+                const std::vector<Matrix<double, DIM_STATE, 1>> &cam_solutions,
+                const std::vector<double> &cam_rot_std,
+                const std::vector<double> &cam_trans_std, double total_rot_std,
+                double total_trans_std);
 
   bool sync_packages(LidarMeasureGroup &meas);
   void prop_imu_once(StatesGroup &imu_prop_state, const double dt, V3D acc_avr,

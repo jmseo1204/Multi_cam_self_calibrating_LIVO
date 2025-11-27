@@ -757,10 +757,20 @@ void VIOManager::computeJacobianAndUpdateEKF(
 
         last_cam_solutions.clear();
         last_cam_solutions.reserve(H_list.size());
+        last_cam_rot_std.clear();
+        last_cam_trans_std.clear();
+        last_cam_rot_std.reserve(H_list.size());
+        last_cam_trans_std.reserve(H_list.size());
+
+        std::vector<double> all_rot_mags;
+        std::vector<double> all_trans_mags;
+
         for (size_t i = 0; i < H_list.size(); ++i) {
           const int rows_i = static_cast<int>(H_list[i].rows());
           if (rows_i <= 0) {
             last_cam_solutions.emplace_back(MD(DIM_STATE, 1)::Zero());
+            last_cam_rot_std.push_back(0.0);
+            last_cam_trans_std.push_back(0.0);
             continue;
           }
           VectorXd R_inv_z_i(rows_i);
@@ -784,6 +794,87 @@ void VIOManager::computeJacobianAndUpdateEKF(
           K_i.block<7, 7>(0, 0) = Ki7;
           MD(DIM_STATE, 1) sol_i = -K_i * htz_i;
           last_cam_solutions.push_back(sol_i);
+
+          // Calculate stats for this camera
+          std::vector<double> cam_rot_mags;
+          std::vector<double> cam_trans_mags;
+          cam_rot_mags.reserve(rows_i);
+          cam_trans_mags.reserve(rows_i);
+
+          for (int r = 0; r < rows_i; ++r) {
+            double w = 1.0 / R_list[i](r);
+            double z_val = z_list[i](r);
+            VectorXd u_ir = H_list[i].row(r).transpose() * (z_val * w);
+            MD(DIM_STATE, 1) dx_ir = -K_i * u_ir;
+
+            double rot_mag = dx_ir.segment<3>(0).norm();
+            double trans_mag = dx_ir.segment<3>(3).norm();
+
+            if (rot_mag > 1e-8) {
+              cam_rot_mags.push_back(rot_mag);
+              all_rot_mags.push_back(rot_mag);
+            }
+            if (trans_mag > 1e-8) {
+              cam_trans_mags.push_back(trans_mag);
+              all_trans_mags.push_back(trans_mag);
+            }
+          }
+
+          double rot_mean = 0, rot_sq_sum = 0;
+          double trans_mean = 0, trans_sq_sum = 0;
+          
+          if (!cam_rot_mags.empty()) {
+            for (double v : cam_rot_mags) {
+              rot_mean += v;
+              rot_sq_sum += v * v;
+            }
+            rot_mean /= cam_rot_mags.size();
+            double rot_var = (rot_sq_sum / cam_rot_mags.size()) - (rot_mean * rot_mean);
+            last_cam_rot_std.push_back(std::sqrt(std::max(0.0, rot_var)));
+          } else {
+             last_cam_rot_std.push_back(0.0);
+          }
+
+          if (!cam_trans_mags.empty()) {
+            for (double v : cam_trans_mags) {
+              trans_mean += v;
+              trans_sq_sum += v * v;
+            }
+            trans_mean /= cam_trans_mags.size();
+            double trans_var = (trans_sq_sum / cam_trans_mags.size()) - (trans_mean * trans_mean);
+            last_cam_trans_std.push_back(std::sqrt(std::max(0.0, trans_var)));
+          } else {
+            last_cam_trans_std.push_back(0.0);
+          }
+        }
+
+        // Compute total std dev
+        if (!all_rot_mags.empty()) {
+          double rot_mean = 0, rot_sq_sum = 0;
+          size_t N = all_rot_mags.size();
+          for (double v : all_rot_mags) {
+            rot_mean += v;
+            rot_sq_sum += v * v;
+          }
+          rot_mean /= N;
+          double rot_var = (rot_sq_sum / N) - (rot_mean * rot_mean);
+          last_total_rot_std = std::sqrt(std::max(0.0, rot_var));
+        } else {
+          last_total_rot_std = 0.0;
+        }
+
+        if (!all_trans_mags.empty()) {
+          double trans_mean = 0, trans_sq_sum = 0;
+          size_t N = all_trans_mags.size();
+          for (double v : all_trans_mags) {
+            trans_mean += v;
+            trans_sq_sum += v * v;
+          }
+          trans_mean /= N;
+          double trans_var = (trans_sq_sum / N) - (trans_mean * trans_mean);
+          last_total_trans_std = std::sqrt(std::max(0.0, trans_var));
+        } else {
+          last_total_trans_std = 0.0;
         }
 
         // R^(-1) * z 계산
